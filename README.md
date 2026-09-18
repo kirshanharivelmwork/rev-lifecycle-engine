@@ -35,17 +35,28 @@ flowchart LR
     E --> F[stats_engine.py]
     E --> G[churn_model.py]
     G --> H[data/processed/churn_risk_alerts.csv]
+    G --> K[models/churn_engine.pkl]
+    K --> L[src/api.py FastAPI]
+    K --> M[app/dashboard.py Streamlit]
+    E --> M
+    H --> M
+    L --> N[POST /v1/predict]
+    L --> O[POST /v1/dispatch-alert]
+    O --> P[data/processed/dispatched_alerts_log.json]
     F --> I[Executive inference]
     H --> J[CSM early-warning queue]
 ```
 
 ```
+app/dashboard.py          Streamlit executive revenue command center
 src/generate_data.py      Front Door + Back Door simulator (CLI)
 src/data_pipeline.py      Schema validation, merge, LTV/CAC, encoding
 src/stats_engine.py       Welch t-test + chi-square + executive narrative
 src/churn_model.py        Logistic baseline, XGBoost production, alerting
+src/api.py                FastAPI scoring service + webhook dispatcher
+src/scoring.py            Shared risk tiers, playbooks, inference encoding
 notebooks/                Guided EDA / ROC / CS playbook
-tests/                    pytest coverage of the four control planes
+tests/                    pytest coverage of pipeline, stats, model, and API
 ```
 
 Processed features include:
@@ -135,18 +146,25 @@ Early-warning output: `data/processed/churn_risk_alerts.csv` (active customers w
 
 ```
 .
+├── app/
+│   └── dashboard.py        Executive Streamlit UI
 ├── data/
 │   ├── raw/                acquisition_leads.csv, user_telemetry_churn.csv
-│   └── processed/          full_funnel_features.csv, churn_risk_alerts.csv
+│   └── processed/          features, alerts, dispatched_alerts_log.json
+├── models/
+│   └── churn_engine.pkl    Persisted production scorer
 ├── notebooks/
 │   └── saas_retention_deepdive.ipynb
 ├── src/
 │   ├── generate_data.py
 │   ├── data_pipeline.py
 │   ├── stats_engine.py
-│   └── churn_model.py
+│   ├── churn_model.py
+│   ├── scoring.py
+│   └── api.py
 ├── tests/
-│   └── test_pipeline.py
+│   ├── test_pipeline.py
+│   └── test_api.py
 ├── requirements.txt
 └── README.md
 ```
@@ -187,9 +205,130 @@ Open `notebooks/saas_retention_deepdive.ipynb` for Front Door vs. Back Door EDA,
 
 ---
 
+## Enterprise Architecture & Deployment
+
+The batch science stack (generate → pipeline → stats → model) is now wrapped by two operational surfaces that share the same persisted scorer (`models/churn_engine.pkl`, version `1.0.0`):
+
+| Surface | Role | Process |
+| --- | --- | --- |
+| **Executive UI** | Revenue / CS command center | Streamlit on port 8501 |
+| **Scoring API** | Real-time predict + critical webhook dispatch | Uvicorn / FastAPI on port 8000 |
+
+```mermaid
+flowchart TB
+    subgraph ops [Online path]
+      UI[Streamlit dashboard]
+      API[FastAPI /v1/predict]
+      WH[Webhook dispatcher]
+    end
+    PKL[models/churn_engine.pkl]
+    FEAT[full_funnel_features.csv]
+    UI --> PKL
+    UI --> FEAT
+    API --> PKL
+    API --> WH
+    WH --> LOG[dispatched_alerts_log.json]
+    WH --> SLACK[Slack / Discord / CRM webhook]
+```
+
+### Launch the dashboard
+
+```bash
+# from the repository root, after features have been built
+python3 -m src.churn_model    # trains + writes models/churn_engine.pkl
+streamlit run app/dashboard.py
+```
+
+The UI loads processed funnel features and scores every active account. It exposes:
+
+- MRR / ARR, at-risk ARR (p > 0.65), NRR forecast, blended LTV:CAC
+- Plotly views: risk-tier distribution, CAC vs. 12-month retention by channel, inactivity × adoption heatmap
+- CSM queue with Risk Tier and Acquisition Channel filters
+- **Simulate retention impact** slider: re-scores the book after an onboarding adoption lift and reports ARR saved
+
+### Launch the API
+
+```bash
+uvicorn src.api:app --reload --port 8000
+```
+
+Optional: set `WEBHOOK_URL` to a Slack incoming-webhook, Discord webhook, or CRM endpoint. If it is unset, `/v1/dispatch-alert` **simulates** the send and still writes `data/processed/dispatched_alerts_log.json`.
+
+Health check:
+
+```bash
+curl -s http://127.0.0.1:8000/health
+```
+
+```json
+{
+  "status": "ok",
+  "model_version": "1.0.0",
+  "model_name": "xgboost",
+  "at_risk_threshold": 0.65,
+  "critical_threshold": 0.7
+}
+```
+
+Score a customer:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/v1/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "customer_id": "CUST_18821",
+    "acquisition_channel": "Outbound Cold Email",
+    "contract_type": "Monthly",
+    "avg_weekly_logins": 0.8,
+    "feature_adoption_score": 2.1,
+    "support_tickets_raised": 6,
+    "days_since_last_login": 32,
+    "monthly_recurring_revenue": 640.0,
+    "cac_usd": 1650.0,
+    "sales_touchpoints": 9
+  }'
+```
+
+Example response:
+
+```json
+{
+  "customer_id": "CUST_18821",
+  "churn_probability": 0.939135,
+  "risk_tier": "Critical",
+  "arr_at_risk": 7680.0,
+  "recommended_playbook": "CSM re-engagement sprint within 48h + executive sponsor ping",
+  "risk_drivers": "32d dark (critical inactivity); low adoption (2.1/10); login collapse; 6 open-pattern tickets; monthly term",
+  "model_version": "1.0.0"
+}
+```
+
+Dispatch a critical alert (fires when `churn_probability` > 0.70, or when `"force": true`):
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/v1/dispatch-alert \
+  -H "Content-Type: application/json" \
+  -d '{
+    "customer_id": "CUST_18821",
+    "acquisition_channel": "Outbound Cold Email",
+    "contract_type": "Monthly",
+    "avg_weekly_logins": 0.8,
+    "feature_adoption_score": 2.1,
+    "support_tickets_raised": 6,
+    "days_since_last_login": 32,
+    "monthly_recurring_revenue": 640.0,
+    "cac_usd": 1650.0,
+    "sales_touchpoints": 9
+  }'
+```
+
+macOS note: XGBoost wheels need OpenMP (`brew install libomp`). The scorer falls back to Random Forest if the native library cannot load.
+
+---
+
 ## Testing
 
-`tests/test_pipeline.py` covers the four control planes:
+`tests/test_pipeline.py` covers the four control planes; `tests/test_api.py` covers the online contract:
 
 | Test | Asserts |
 | --- | --- |
@@ -197,6 +336,8 @@ Open `notebooks/saas_retention_deepdive.ipynb` for Front Door vs. Back Door EDA,
 | `test_pipeline_merge_and_features` | Row count, LTV:CAC identity, inactivity flag, one-hot rank |
 | `test_stats_significance` | t-test / χ² run and p-values ∈ [0, 1] |
 | `test_model_inference` | New rows score to probabilities ∈ [0.0, 1.0] |
+| `test_health_ok` | `GET /health` returns HTTP 200 with status and model version |
+| `test_predict_returns_valid_payload` | `POST /v1/predict` returns HTTP 200, probability ∈ [0, 1], playbook, ARR at risk |
 
 ---
 

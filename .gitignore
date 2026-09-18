@@ -25,4 +25,5 @@ htmlcov/
 # Generated artifacts
 data/raw/*.csv
 data/processed/*.csv
+data/processed/*.json
 models/*.pkl

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import pickle
 import sys
 import warnings
 from dataclasses import dataclass, field
@@ -31,7 +32,14 @@ from statsmodels.stats.outliers_influence import variance_inflation_factor
 from statsmodels.tools.tools import add_constant
 
 from src.data_pipeline import run_pipeline
-from src.paths import CHURN_ALERTS_PATH, FULL_FUNNEL_FEATURES_PATH, PROCESSED_DIR
+from src.paths import (
+    CHURN_ALERTS_PATH,
+    ENGINE_BUNDLE_PATH,
+    FULL_FUNNEL_FEATURES_PATH,
+    MODEL_VERSION,
+    PROCESSED_DIR,
+)
+from src.scoring import assign_risk_tier, encode_model_columns, recommend_playbook
 
 LOGGER = logging.getLogger(__name__)
 
@@ -376,8 +384,7 @@ class ChurnScoringEngine:
     def predict_proba(self, df: pd.DataFrame) -> np.ndarray:
         if not self.fitted_ or self.production_model_ is None:
             raise RuntimeError("Engine is not fitted. Call fit() first.")
-        X, _ = self._model_frame(df)
-        X = X.reindex(columns=self.feature_columns_, fill_value=0.0)
+        X = encode_model_columns(df, self.feature_columns_)
         return self.production_model_.predict_proba(X)[:, 1]
 
     def score_active_customers(
@@ -394,14 +401,8 @@ class ChurnScoringEngine:
         active["churn_risk_score"] = self.predict_proba(active)
         alerts = active.loc[active["churn_risk_score"] >= threshold].copy()
         alerts.sort_values("churn_risk_score", ascending=False, inplace=True)
-        alerts["risk_tier"] = pd.cut(
-            alerts["churn_risk_score"],
-            bins=[threshold, 0.80, 0.90, 1.01],
-            labels=["Watch", "High", "Critical"],
-            include_lowest=True,
-            right=False,
-        )
-        alerts["recommended_intervention"] = alerts.apply(_recommend_intervention, axis=1)
+        alerts["risk_tier"] = alerts["churn_risk_score"].map(assign_risk_tier)
+        alerts["recommended_intervention"] = alerts.apply(recommend_playbook, axis=1)
         keep = [
             ID_COL,
             "churn_risk_score",
@@ -431,32 +432,56 @@ class ChurnScoringEngine:
 
 
 def _recommend_intervention(row: pd.Series) -> str:
-    days = float(row.get("days_since_last_login", 0) or 0)
-    engagement = float(row.get("engagement_index", 0) or 0)
-    tickets = float(row.get("support_tickets_raised", 0) or 0)
-    adoption = float(row.get("feature_adoption_score", 0) or 0)
-    ltv_cac = float(row.get("ltv_cac_ratio", 0) or 0)
-    contract = str(row.get("contract_type", ""))
-
-    if days > 21:
-        return "CSM re-engagement sprint within 48h + executive sponsor ping"
-    if adoption < 4.0:
-        return "Guided onboarding reboot: core-feature activation workshop"
-    if tickets >= 4:
-        return "Technical account review; escalate open tickets to solutions eng"
-    if engagement < 4.5:
-        return "In-product adoption campaign + weekly success checklist"
-    if contract == "Monthly" and ltv_cac >= 3:
-        return "Annual conversion incentive (discount locked to 12-month term)"
-    if ltv_cac < 3:
-        return "Value review: usage vs. contracted seats; avoid over-discounting"
-    return "Health-score watchlist; nurture with case studies and QBR"
+    return recommend_playbook(row)
 
 
 def _load_features() -> pd.DataFrame:
     if FULL_FUNNEL_FEATURES_PATH.exists():
         return pd.read_csv(FULL_FUNNEL_FEATURES_PATH)
     return run_pipeline()
+
+
+def save_engine(engine: ChurnScoringEngine, path: Path | None = None, version: str = MODEL_VERSION) -> Path:
+    """Persist the fitted production engine for the API and dashboard."""
+    dest = Path(path) if path else ENGINE_BUNDLE_PATH
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "model_version": version,
+        "production_name": engine.production_name_,
+        "feature_columns": engine.feature_columns_,
+        "engine": engine,
+    }
+    with dest.open("wb") as handle:
+        pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    LOGGER.info("Wrote scoring artifacts -> %s (version %s)", dest, version)
+    return dest
+
+
+def load_engine(path: Path | None = None) -> tuple[ChurnScoringEngine, str]:
+    """Load a previously persisted engine bundle."""
+    source = Path(path) if path else ENGINE_BUNDLE_PATH
+    with source.open("rb") as handle:
+        payload = pickle.load(handle)
+    engine: ChurnScoringEngine = payload["engine"]
+    version = str(payload.get("model_version", MODEL_VERSION))
+    if not getattr(engine, "fitted_", False):
+        raise RuntimeError(f"Persisted engine at {source} is not fitted")
+    return engine, version
+
+
+def load_or_train(tune: bool = False, persist: bool = True) -> tuple[ChurnScoringEngine, str]:
+    """Return a production engine, training from processed features if needed."""
+    if ENGINE_BUNDLE_PATH.exists():
+        try:
+            return load_engine()
+        except Exception as exc:
+            LOGGER.warning("Could not load %s (%s); retraining", ENGINE_BUNDLE_PATH, exc)
+    data = _load_features()
+    engine = ChurnScoringEngine()
+    engine.fit(data, tune=tune)
+    if persist:
+        save_engine(engine)
+    return engine, MODEL_VERSION
 
 
 def score_active_customers(
@@ -478,6 +503,7 @@ def main() -> None:
     df = _load_features()
     engine = ChurnScoringEngine()
     engine.fit(df, tune=True)
+    save_engine(engine)
     alerts = engine.score_active_customers(df, threshold=DEFAULT_THRESHOLD)
     print(f"Active customers above {DEFAULT_THRESHOLD:.0%} churn risk: {len(alerts):,}")
     if not alerts.empty:
