@@ -1,8 +1,25 @@
 # Full-Funnel SaaS Retention & Churn Prediction Engine (LTV:CAC Optimizer)
 
+[![Live Command Center](https://img.shields.io/badge/Live-Command%20Center-0ea5e9)](https://rev-lifecycle-engine-production.up.railway.app)
+[![Stripe ingestion](https://img.shields.io/badge/Stripe-webhook%20%2Fapi%2Fv1%2Fwebhooks%2Fstripe-635bff)](https://rev-lifecycle-engine-production.up.railway.app/api/v1/webhooks/stripe)
+[![Test status](https://img.shields.io/badge/tests-18%20passing-22c55e)](#testing)
+
+**Production (Railway):** [Executive Command Center](https://rev-lifecycle-engine-production.up.railway.app) · Stripe ingest [`POST /api/v1/webhooks/stripe`](https://rev-lifecycle-engine-production.up.railway.app/api/v1/webhooks/stripe) · **18** unit & integration tests passing
+
 A production-style analytics system for B2B SaaS: **buy the right customers at the Front Door, and stop losing them at the Back Door.**
 
-This repository is designed as a senior data-science / analytics-engineering portfolio piece. It follows the Google Advanced Data Analytics stack — pandas, inferential statistics, scikit-learn, and gradient boosting — with an explicit contract between **acquisition economics** and **product-led retention**.
+This repository is designed as a senior data-science / analytics-engineering portfolio piece **and** a live commercial demo. It follows the Google Advanced Data Analytics stack — pandas, inferential statistics, scikit-learn, and gradient boosting — with an explicit contract between **acquisition economics** and **product-led retention**. Outbound sequences and the 48-hour audit kit live in [`docs/OUTBOUND_PLAYBOOK.md`](docs/OUTBOUND_PLAYBOOK.md).
+
+### Live production book (Railway dashboard)
+
+Figures from the seeded Acme tenant on the live Command Center:
+
+| KPI | Live value |
+| --- | --- |
+| Monitored active ARR | **$416.6K** across **50** active accounts |
+| Prospective ARR at risk | **$100.7K** |
+| Verified ARR preserved | **$150.4K** (empirical 30/60/90-day `InterventionOutcome` audits) |
+| Dispatched interventions | **3** actions queued in HITL review |
 
 ---
 
@@ -20,6 +37,58 @@ This engine treats retention as a **two-door system**:
 Synthetic but realistic extracts (`n = 5,000`) are generated with a **logistic churn process**: inactivity, weak feature adoption, monthly contracts, and outbound-heavy mix raise the log-odds of churn. The downstream pipeline does not “know” that formula — it has to recover it with hypothesis tests and supervised models.
 
 **Headline result on the seeded book of business (seed = 42):** overall churn is **12.9%**. That rate is not uniform. Partner Referral churns at **3.2%**; Outbound Cold Email churns at **24.1%**. Feature adoption is **~2.1 points lower** among churned accounts (Cohen’s *d* = **−1.06**, large). The operating implication is blunt: onboarding friction and channel quality are first-order P&L levers, not dashboard vanity metrics.
+
+---
+
+## 60-second walkthrough (live Railway)
+
+Open the production Command Center and walk a prospect through the seeded Acme book without installing anything.
+
+1. Open [https://rev-lifecycle-engine-production.up.railway.app](https://rev-lifecycle-engine-production.up.railway.app) (wait a few seconds if Railway is waking the container).
+2. Confirm the sidebar is on **Acme SaaS**. Read the four Command Center KPIs: **$416.6K** monitored ARR, **$100.7K** at risk, **$150.4K** verified ARR preserved, and this month’s intervention count (including **3** HITL-queued actions).
+3. Scroll the **live action stream** and **book risk mix** histogram. Point at High/Critical accounts in the at-risk table.
+4. Open **Staging & Approval Queue**. Show the three pending high-ACV playbooks and the Approve / Dismiss controls (do not dismiss live demo rows unless you intend to re-seed).
+5. Open **Tenant Settings & Integrations**. Show where a customer would paste Stripe `whsec_…`, Slack webhook, Resend `re_…`, cooldown (7–30 days), and HITL ARR floor — **before** any live webhook is enabled.
+6. Optional (for technical buyers): the Stripe URL they will whitelist is `https://rev-lifecycle-engine-production.up.railway.app/api/v1/webhooks/stripe`. Health: `/health` on the same host.
+
+That is the demo. The commercial next step is a **48-hour retention audit on their CSV exports**, not a calendar hold for “implementation.” See [`docs/OUTBOUND_PLAYBOOK.md`](docs/OUTBOUND_PLAYBOOK.md).
+
+---
+
+## 48-Hour Retention Audit Architecture
+
+Live Stripe and Segment webhooks are **opt-in after proof**. The first engagement is a diagnostic on historical files the customer already has: billing export + product telemetry (or a mapped equivalent). No production credentials, no engineering sprint.
+
+```mermaid
+flowchart LR
+    CSV[Client CSV exports] --> MAP[Column map to lead + telemetry schemas]
+    MAP --> RAW[data/raw/*.csv]
+    RAW --> PIPE[src/data_pipeline.py]
+    PIPE --> STATS[src/stats_engine.py]
+    PIPE --> MODEL[src/churn_model.py]
+    STATS --> MEMO[Diagnostic memo: channel churn, adoption gap]
+    MODEL --> ALERTS[churn_risk_alerts.csv + playbooks]
+    MEMO --> CALL[Readout call]
+    ALERTS --> CALL
+    CALL --> WH[Enable live webhooks on Railway]
+```
+
+**Day 0 — Intake.** Customer sends two tables (or one wide table you split):
+
+| Extract | Required columns |
+| --- | --- |
+| Acquisition / billing (`acquisition_leads.csv`) | `customer_id`, `acquisition_channel`, `sales_touchpoints`, `cac_usd`, `monthly_recurring_revenue`, `contract_type` (`Monthly` \| `Annual`) |
+| Product telemetry (`user_telemetry_churn.csv`) | `customer_id`, `avg_weekly_logins`, `feature_adoption_score` (0–10), `support_tickets_raised`, `days_since_last_login`, `churned` (0/1) |
+
+Unknown channels or missing CAC can be filled with documented defaults (`cac_usd = 500`, `sales_touchpoints = 4`) after you label the assumption in the memo.
+
+**Hours 0–8 — Pipeline.** Drop files into `data/raw/`, run `python3 -m src.data_pipeline`. This validates schemas, inner-joins on `customer_id`, and engineers LTV:CAC, inactivity, engagement, `days_until_renewal`, and `contract_renewal_urgency_ratio`.
+
+**Hours 8–24 — Inference.** `python3 -m src.stats_engine` prints Welch t-test (adoption) and chi-square (channel × churn). `python3 -m src.churn_model` fits logistic + XGBoost (or Random Forest fallback) and writes `data/processed/churn_risk_alerts.csv` for still-active accounts with \(p \ge 0.65\).
+
+**Hours 24–48 — Readout.** Package: (1) which channels leak vs. pay back CAC, (2) the silent-inactivity cohort and recommended playbooks, (3) estimated ARR at risk vs. what a 14-day cooldown + HITL queue would have suppressed. Only after they accept the memo do you turn on Railway webhooks (`/api/v1/webhooks/stripe`, `/api/v1/webhooks/telemetry`) and tenant secrets in **Tenant Settings & Integrations**.
+
+The audit is deliberately **zero-integration**: CSV in, diagnostic out. Webhooks are the second contract, not the first.
 
 ---
 
