@@ -15,10 +15,13 @@ from src.database import get_session_factory, init_db, reset_engine
 from src.models_db import (
     ChurnAssessment,
     CustomerAccount,
+    DeadLetterJob,
     DispatchedAction,
+    IdempotentEvent,
     IngestionJob,
     InterventionOutcome,
     Organization,
+    SystemAuditLog,
     TelemetryEvent,
     utcnow,
 )
@@ -40,6 +43,9 @@ CHANNELS = ("Outbound Cold Email", "Inbound Organic", "Paid Search", "Partner Re
 def _wipe_org(session, org_id: str) -> None:
     session.query(InterventionOutcome).filter(InterventionOutcome.org_id == org_id).delete()
     session.query(IngestionJob).filter(IngestionJob.org_id == org_id).delete()
+    session.query(DeadLetterJob).filter(DeadLetterJob.org_id == org_id).delete()
+    session.query(IdempotentEvent).filter(IdempotentEvent.org_id == org_id).delete()
+    session.query(SystemAuditLog).filter(SystemAuditLog.org_id == org_id).delete()
     session.query(DispatchedAction).filter(DispatchedAction.org_id == org_id).delete()
     session.query(ChurnAssessment).filter(ChurnAssessment.org_id == org_id).delete()
     session.query(TelemetryEvent).filter(TelemetryEvent.org_id == org_id).delete()
@@ -57,6 +63,7 @@ def seed_organization(session, org_id: str, name: str, api_key: str, plan: str) 
         created_at=utcnow(),
         alert_cooldown_days=14,
         hitl_mrr_threshold=1000.0,
+        subscription_status="active",
     )
     session.add(org)
     session.flush()

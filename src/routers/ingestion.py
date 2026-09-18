@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from typing import Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from src.auth import hash_api_key
+from src.billing import INGEST_LIMIT, limiter, raise_if_inactive
 from src.database import get_db
-from src.models_db import IngestionJob, Organization, utcnow
+from src.models_db import IdempotentEvent, IngestionJob, Organization, utcnow
 from src.tasks import process_ingestion_job
 
 router = APIRouter(tags=["ingestion"])
@@ -68,13 +72,48 @@ def _resolve_org(
     if org_id:
         org = db.query(Organization).filter(Organization.org_id == org_id).one_or_none()
         if org:
+            raise_if_inactive(org)
             return org
     key = x_api_key or write_key
     if key:
         org = db.query(Organization).filter(Organization.api_key == hash_api_key(key)).one_or_none()
         if org:
+            raise_if_inactive(org)
             return org
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unable to resolve organization")
+
+
+def extract_event_id(payload: dict[str, Any], source: str) -> str:
+    explicit = payload.get("id") or payload.get("event_id") or payload.get("messageId") or payload.get("message_id")
+    if explicit:
+        return str(explicit)[:128]
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    return f"{source}_{digest[:40]}"
+
+
+def claim_idempotent_event(db: Session, org_id: str, event_id: str, source: str) -> bool:
+    """Return True if this event is newly claimed; False if it is a duplicate."""
+    existing = (
+        db.query(IdempotentEvent)
+        .filter(IdempotentEvent.org_id == org_id, IdempotentEvent.event_id == event_id)
+        .one_or_none()
+    )
+    if existing:
+        return False
+    db.add(
+        IdempotentEvent(
+            org_id=org_id,
+            event_id=event_id,
+            source=source,
+            created_at=utcnow(),
+        )
+    )
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        return False
+    return True
 
 
 def _enqueue_job(
@@ -98,7 +137,8 @@ def _enqueue_job(
     return job
 
 
-@router.post("/webhooks/stripe", status_code=202)
+@router.post("/webhooks/stripe")
+@limiter.limit(INGEST_LIMIT)
 async def stripe_webhook(
     request: Request,
     background: BackgroundTasks,
@@ -106,7 +146,7 @@ async def stripe_webhook(
     x_org_id: Optional[str] = Header(default=None, alias="X-Org-Id"),
     x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
     stripe_signature: Optional[str] = Header(default=None, alias="Stripe-Signature"),
-) -> dict[str, Any]:
+) -> Any:
     """Accept a Stripe event, verify signature, persist, and process asynchronously."""
     raw = await request.body()
     metadata_hint = {}
@@ -119,15 +159,25 @@ async def stripe_webhook(
     org = _resolve_org(db, x_org_id, x_api_key, metadata=metadata_hint)
     secret = org.stripe_webhook_secret or os.getenv("STRIPE_WEBHOOK_SECRET")
     event = verify_stripe_signature(raw, stripe_signature, secret)
+    event_id = extract_event_id(event, "stripe")
+    if not claim_idempotent_event(db, org.org_id, event_id, "stripe"):
+        return JSONResponse(
+            status_code=200,
+            content={"status": "skipped", "reason": "duplicate", "event_id": event_id, "org_id": org.org_id},
+        )
     job = _enqueue_job(db, org, "stripe", event, background)
-    return {
-        "ok": True,
-        "accepted": True,
-        "job_id": job.id,
-        "status": "queued",
-        "org_id": org.org_id,
-        "event_type": event.get("type"),
-    }
+    return JSONResponse(
+        status_code=202,
+        content={
+            "ok": True,
+            "accepted": True,
+            "job_id": job.id,
+            "status": "queued",
+            "org_id": org.org_id,
+            "event_type": event.get("type"),
+            "event_id": event_id,
+        },
+    )
 
 
 class TelemetryItem(BaseModel):
@@ -149,16 +199,20 @@ class TelemetryBatch(BaseModel):
     event: Optional[str] = None
     timestamp: Optional[str] = None
     properties: dict[str, Any] = Field(default_factory=dict)
+    message_id: Optional[str] = Field(default=None, alias="messageId")
+    event_id: Optional[str] = None
 
 
-@router.post("/webhooks/telemetry", status_code=202)
+@router.post("/webhooks/telemetry")
+@limiter.limit(INGEST_LIMIT)
 def telemetry_webhook(
+    request: Request,
     payload: TelemetryBatch,
     background: BackgroundTasks,
     db: Session = Depends(get_db),
     x_org_id: Optional[str] = Header(default=None, alias="X-Org-Id"),
     x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
-) -> dict[str, Any]:
+) -> Any:
     """Persist a job for PostHog/Segment-style events and return 202 immediately."""
     org = _resolve_org(
         db,
@@ -190,11 +244,29 @@ def telemetry_webhook(
             }
             for item in items
         ]
+    event_id = extract_event_id(
+        {
+            "id": payload.event_id or payload.message_id,
+            "event_id": payload.event_id,
+            "messageId": payload.message_id,
+            "batch": body.get("batch"),
+        },
+        "telemetry",
+    )
+    if not claim_idempotent_event(db, org.org_id, event_id, "telemetry"):
+        return JSONResponse(
+            status_code=200,
+            content={"status": "skipped", "reason": "duplicate", "event_id": event_id, "org_id": org.org_id},
+        )
     job = _enqueue_job(db, org, "telemetry", body, background)
-    return {
-        "ok": True,
-        "accepted": True,
-        "job_id": job.id,
-        "status": "queued",
-        "org_id": org.org_id,
-    }
+    return JSONResponse(
+        status_code=202,
+        content={
+            "ok": True,
+            "accepted": True,
+            "job_id": job.id,
+            "status": "queued",
+            "org_id": org.org_id,
+            "event_id": event_id,
+        },
+    )

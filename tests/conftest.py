@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os
+
+os.environ.setdefault("DISABLE_RATE_LIMIT", "1")
+
 import pytest
 
 from src.data_pipeline import run_pipeline

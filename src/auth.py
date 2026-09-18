@@ -9,6 +9,7 @@ from typing import Optional
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.orm import Session
 
+from src.billing import raise_if_inactive
 from src.database import get_db
 from src.models_db import Organization
 
@@ -36,4 +37,5 @@ def get_current_org(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key",
         )
+    raise_if_inactive(org)
     return org

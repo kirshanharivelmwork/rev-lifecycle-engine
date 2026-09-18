@@ -72,14 +72,28 @@ def process_ingestion_job(job_id: str, max_attempts: int = MAX_ATTEMPTS) -> dict
             except Exception:
                 pass
             session = get_session_factory()()
+            org_id = "unknown"
+            payload: dict = {}
             try:
                 job = session.get(IngestionJob, job_id)
                 if job:
+                    org_id = job.org_id
+                    payload = job.payload if isinstance(job.payload, dict) else {}
                     _mark(job, "failed" if attempt >= max_attempts else "queued", last_error)
                     session.commit()
             finally:
                 session.close()
-            if attempt < max_attempts:
+            if attempt >= max_attempts:
+                from src.dead_letter import record_dead_letter
+
+                record_dead_letter(
+                    org_id,
+                    "process_ingestion_job",
+                    payload,
+                    last_error or "unknown",
+                    attempt,
+                )
+            else:
                 time.sleep(min(0.05 * attempt, 0.2))
         finally:
             session.close()

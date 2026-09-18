@@ -14,6 +14,7 @@ import plotly.express as px
 import streamlit as st
 from sqlalchemy.orm import Session
 
+from src.audit import update_tenant_policy
 from src.database import get_session_factory, init_db
 from src.dispatcher import approve_pending_dispatch, dismiss_false_positive
 from src.models_db import (
@@ -21,6 +22,7 @@ from src.models_db import (
     CustomerAccount,
     DispatchedAction,
     Organization,
+    SystemAuditLog,
     utcnow,
 )
 from src.outcome_tracker import audit_intervention_outcomes
@@ -358,20 +360,52 @@ def main() -> None:
                 help="Accounts above this MRR/ARR-proxy wait in Staging until a CSM approves.",
             )
             if st.button("Save tenant settings", type="primary"):
-                if stripe_secret.strip():
-                    org.stripe_webhook_secret = stripe_secret.strip()
-                if slack_url.strip():
-                    org.slack_webhook_url = slack_url.strip()
-                if resend_key.strip():
-                    org.resend_api_key = resend_key.strip()
-                org.alert_cooldown_days = int(cooldown_days)
-                org.hitl_mrr_threshold = float(hitl_arr)
+                old_cooldown = org.alert_cooldown_days
+                old_hitl = org.hitl_mrr_threshold
+                update_tenant_policy(
+                    session,
+                    org,
+                    actor_id="dashboard",
+                    alert_cooldown_days=int(cooldown_days),
+                    hitl_mrr_threshold=float(hitl_arr),
+                    stripe_webhook_secret=stripe_secret.strip() or None,
+                    slack_webhook_url=slack_url.strip() or None,
+                    resend_api_key=resend_key.strip() or None,
+                )
                 session.query(CustomerAccount).filter(CustomerAccount.org_id == org.org_id).update(
                     {CustomerAccount.cooldown_days: int(cooldown_days)}
                 )
                 session.commit()
-                st.success("Saved integrations and policy for this organization.")
+                st.success(
+                    f"Saved integrations and policy (cooldown {old_cooldown}→{org.alert_cooldown_days}, "
+                    f"HITL {old_hitl}→{org.hitl_mrr_threshold})."
+                )
                 st.rerun()
+            st.markdown("#### Recent audit log")
+            logs = (
+                session.query(SystemAuditLog)
+                .filter(SystemAuditLog.org_id == org.org_id)
+                .order_by(SystemAuditLog.created_at.desc())
+                .limit(12)
+                .all()
+            )
+            if not logs:
+                st.caption("No audit events yet.")
+            else:
+                st.dataframe(
+                    [
+                        {
+                            "when": row.created_at,
+                            "actor": row.actor_id,
+                            "action": row.action,
+                            "old": row.old_value,
+                            "new": row.new_value,
+                        }
+                        for row in logs
+                    ],
+                    hide_index=True,
+                    width="stretch",
+                )
     finally:
         session.close()
 

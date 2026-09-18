@@ -140,19 +140,30 @@ def _email_copy(account: CustomerAccount, scored: dict[str, Any]) -> dict[str, s
     }
 
 
-def _post_slack(payload: dict[str, Any], webhook_url: Optional[str] = None) -> tuple[str, Optional[int]]:
+def _post_slack(payload: dict[str, Any], webhook_url: Optional[str] = None, org_id: Optional[str] = None) -> tuple[str, Optional[int]]:
     url = webhook_url or os.getenv("SLACK_WEBHOOK_URL") or os.getenv("WEBHOOK_URL")
     if not url:
         return "simulated", None
-    try:
-        response = requests.post(url, json=payload, timeout=8)
-        return ("delivered" if response.ok else "failed"), int(response.status_code)
-    except requests.RequestException as exc:
-        LOGGER.warning("Slack dispatch failed: %s", exc)
-        return "failed", None
+    last_error = None
+    last_status = None
+    for attempt in range(1, 4):
+        try:
+            response = requests.post(url, json=payload, timeout=8)
+            last_status = int(response.status_code)
+            if response.ok:
+                return "delivered", last_status
+            last_error = f"HTTP {last_status}"
+        except requests.RequestException as exc:
+            LOGGER.warning("Slack dispatch failed: %s", exc)
+            last_error = str(exc)
+    if org_id:
+        from src.dead_letter import record_dead_letter
+
+        record_dead_letter(org_id, "slack_dispatch", payload, last_error or "slack_failed", 3)
+    return "failed", last_status
 
 
-def _post_resend(email: dict[str, str], api_key: Optional[str] = None) -> tuple[str, Optional[int]]:
+def _post_resend(email: dict[str, str], api_key: Optional[str] = None, org_id: Optional[str] = None) -> tuple[str, Optional[int]]:
     api_key = api_key or os.getenv("RESEND_API_KEY")
     body = {
         "from": email["from"],
@@ -162,17 +173,28 @@ def _post_resend(email: dict[str, str], api_key: Optional[str] = None) -> tuple[
     }
     if not api_key:
         return "simulated", None
-    try:
-        response = requests.post(
-            RESEND_URL,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=body,
-            timeout=8,
-        )
-        return ("delivered" if response.ok else "failed"), int(response.status_code)
-    except requests.RequestException as exc:
-        LOGGER.warning("Resend dispatch failed: %s", exc)
-        return "failed", None
+    last_error = None
+    last_status = None
+    for _attempt in range(1, 4):
+        try:
+            response = requests.post(
+                RESEND_URL,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=body,
+                timeout=8,
+            )
+            last_status = int(response.status_code)
+            if response.ok:
+                return "delivered", last_status
+            last_error = f"HTTP {last_status}"
+        except requests.RequestException as exc:
+            LOGGER.warning("Resend dispatch failed: %s", exc)
+            last_error = str(exc)
+    if org_id:
+        from src.dead_letter import record_dead_letter
+
+        record_dead_letter(org_id, "resend_dispatch", body, last_error or "resend_failed", 3)
+    return "failed", last_status
 
 
 def _record_action(
@@ -227,7 +249,7 @@ def _fire_channels(
 ) -> list[DispatchedAction]:
     actions: list[DispatchedAction] = []
     slack_payload = _slack_blocks(account, scored)
-    slack_status, slack_http = _post_slack(slack_payload, webhook_url=slack_url)
+    slack_status, slack_http = _post_slack(slack_payload, webhook_url=slack_url, org_id=account.org_id)
     slack_payload = dict(slack_payload)
     slack_payload["http_status"] = slack_http
     slack_payload["trigger_reason"] = scored["drivers"]
@@ -237,7 +259,7 @@ def _fire_channels(
     record_intervention_outcome(session, account, slack_action)
 
     email = _email_copy(account, scored)
-    email_status, email_http = _post_resend(email, api_key=resend_api_key)
+    email_status, email_http = _post_resend(email, api_key=resend_api_key, org_id=account.org_id)
     email_payload = {
         **email,
         "http_status": email_http,
@@ -380,6 +402,16 @@ def approve_pending_dispatch(
             resend_api_key=(org.resend_api_key if org else None) or os.getenv("RESEND_API_KEY"),
             cooldown_days=_org_cooldown_days(org, account),
         )
+        from src.audit import record_audit
+
+        record_audit(
+            session,
+            org_id,
+            "csm",
+            "hitl.approve",
+            old_value={"approval_status": "pending", "account_id": account_id},
+            new_value={"approval_status": "approved", "action_ids": [a.id for a in actions]},
+        )
         if owns_session:
             session.commit()
         else:
@@ -421,6 +453,16 @@ def dismiss_false_positive(
             "approval_queue",
             {"trigger_reason": "dismissed_false_positive"},
             "dismissed",
+        )
+        from src.audit import record_audit
+
+        record_audit(
+            session,
+            org_id,
+            "csm",
+            "hitl.dismiss",
+            old_value={"approval_status": "pending", "account_id": account_id},
+            new_value={"approval_status": "dismissed", "action_id": action.id},
         )
         if owns_session:
             session.commit()

@@ -38,6 +38,7 @@ class Organization(Base):
     resend_api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     alert_cooldown_days: Mapped[int] = mapped_column(Integer, default=DEFAULT_COOLDOWN_DAYS, nullable=False)
     hitl_mrr_threshold: Mapped[float] = mapped_column(Float, default=1000.0, nullable=False)
+    subscription_status: Mapped[str] = mapped_column(String(24), default="active", nullable=False)
 
     accounts: Mapped[list["CustomerAccount"]] = relationship(back_populates="organization")
 
@@ -170,3 +171,47 @@ class InterventionOutcome(Base):
 
     account: Mapped[CustomerAccount] = relationship(back_populates="outcomes")
     action: Mapped[Optional[DispatchedAction]] = relationship(back_populates="outcomes")
+
+
+class IdempotentEvent(Base):
+    __tablename__ = "idempotent_events"
+    __table_args__ = (UniqueConstraint("org_id", "event_id", name="uq_idempotent_org_event"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    org_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.org_id", ondelete="CASCADE"), nullable=False
+    )
+    event_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class DeadLetterJob(Base):
+    __tablename__ = "dead_letter_jobs"
+    __table_args__ = (Index("ix_dlq_org_resolved", "org_id", "resolved"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    org_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.org_id", ondelete="CASCADE"), nullable=False
+    )
+    task_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    payload: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON, default=dict)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    resolved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class SystemAuditLog(Base):
+    __tablename__ = "system_audit_logs"
+    __table_args__ = (Index("ix_audit_org_created", "org_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    org_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.org_id", ondelete="CASCADE"), nullable=False
+    )
+    actor_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    action: Mapped[str] = mapped_column(String(80), nullable=False)
+    old_value: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True)
+    new_value: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

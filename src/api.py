@@ -16,10 +16,14 @@ if __package__ in {None, ""}:
 
 import pandas as pd
 import requests
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from src.auth import get_current_org
+from src.billing import INGEST_LIMIT, SubscriptionInactive, billing_json_response, limiter
 from src.churn_model import ChurnScoringEngine, load_or_train
 from src.database import init_db
 from src.models_db import Organization
@@ -32,7 +36,7 @@ from src.paths import (
     MODEL_VERSION,
     PROCESSED_DIR,
 )
-from src.routers import ingestion
+from src.routers import customers, ingestion
 from src.scoring import assign_risk_tier, recommend_playbook, risk_drivers
 
 LOGGER = logging.getLogger(__name__)
@@ -118,9 +122,22 @@ app = FastAPI(
     version=MODEL_VERSION,
     lifespan=lifespan,
 )
+app.state.limiter = limiter
+app.add_middleware(SlowAPIMiddleware)
+
+
+@app.exception_handler(SubscriptionInactive)
+async def _subscription_inactive(_request: Request, _exc: SubscriptionInactive):
+    return billing_json_response()
+
+
+@app.exception_handler(RateLimitExceeded)
+async def _rate_limited(_request: Request, _exc: RateLimitExceeded):
+    return JSONResponse(status_code=429, content={"error": "Too Many Requests"})
 
 
 app.include_router(ingestion.router, prefix="/api/v1")
+app.include_router(customers.router, prefix="/api/v1")
 
 
 def score_payload(
@@ -210,7 +227,10 @@ def health(engine: ChurnScoringEngine = Depends(get_engine)) -> dict[str, Any]:
 
 
 @app.post("/v1/predict", response_model=PredictionResponse)
+@app.post("/api/v1/predict", response_model=PredictionResponse)
+@limiter.limit(INGEST_LIMIT)
 def predict(
+    request: Request,
     payload: CustomerTelemetry,
     org: Organization = Depends(get_current_org),
     engine: ChurnScoringEngine = Depends(get_engine),
@@ -223,7 +243,9 @@ def predict(
 
 
 @app.post("/v1/dispatch-alert", response_model=DispatchResponse)
+@limiter.limit(INGEST_LIMIT)
 def dispatch_alert(
+    request: Request,
     payload: DispatchRequest,
     org: Organization = Depends(get_current_org),
     engine: ChurnScoringEngine = Depends(get_engine),

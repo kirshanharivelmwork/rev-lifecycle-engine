@@ -12,6 +12,7 @@ from collections.abc import Generator
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from src.models_db import Base
 from src.paths import DEFAULT_DATABASE_URL, SQLITE_DB_PATH
@@ -24,10 +25,20 @@ def database_url() -> str:
     return os.getenv("DATABASE_URL", DEFAULT_DATABASE_URL)
 
 
-def _sqlite_connect_args(url: str) -> dict:
+def _engine_kwargs(url: str) -> dict:
     if url.startswith("sqlite"):
-        return {"check_same_thread": False}
-    return {}
+        return {
+            "future": True,
+            "connect_args": {"check_same_thread": False},
+            "poolclass": StaticPool,
+        }
+    return {
+        "future": True,
+        "pool_size": 20,
+        "max_overflow": 10,
+        "pool_recycle": 300,
+        "pool_pre_ping": True,
+    }
 
 
 def get_engine() -> Engine:
@@ -36,7 +47,7 @@ def get_engine() -> Engine:
         url = database_url()
         if url.startswith("sqlite") and "memory" not in url:
             SQLITE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _engine = create_engine(url, future=True, connect_args=_sqlite_connect_args(url))
+        _engine = create_engine(url, **_engine_kwargs(url))
         if url.startswith("sqlite"):
 
             @event.listens_for(_engine, "connect")
@@ -86,6 +97,7 @@ def migrate_schema(engine: Engine) -> None:
     _ensure_column(engine, "organizations", "resend_api_key", "resend_api_key TEXT")
     _ensure_column(engine, "organizations", "alert_cooldown_days", "alert_cooldown_days INTEGER DEFAULT 14")
     _ensure_column(engine, "organizations", "hitl_mrr_threshold", "hitl_mrr_threshold FLOAT DEFAULT 1000")
+    _ensure_column(engine, "organizations", "subscription_status", "subscription_status VARCHAR(24) DEFAULT 'active'")
     _ensure_column(engine, "customer_accounts", "last_contacted_at", "last_contacted_at DATETIME")
     _ensure_column(engine, "customer_accounts", "cooldown_days", "cooldown_days INTEGER DEFAULT 14")
     _ensure_column(engine, "customer_accounts", "suppressed_until", "suppressed_until DATETIME")
