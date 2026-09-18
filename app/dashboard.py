@@ -38,8 +38,8 @@ st.set_page_config(
 
 PLOTLY_LAYOUT = dict(
     paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor="rgba(11,18,32,0.35)",
-    font=dict(color="#e8eefc", family="Inter, IBM Plex Sans, sans-serif"),
+    plot_bgcolor="#F4F6F8",
+    font=dict(color="#1F2937", family="IBM Plex Sans, sans-serif"),
     margin=dict(l=40, r=20, t=50, b=40),
     legend=dict(bgcolor="rgba(0,0,0,0)"),
 )
@@ -52,30 +52,28 @@ def _inject_css() -> None:
         @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
         html, body, [class*="css"] { font-family: "IBM Plex Sans", sans-serif; }
         .stApp {
-            background:
-                radial-gradient(1200px 500px at 10% -10%, rgba(62,224,177,0.12), transparent 50%),
-                radial-gradient(900px 400px at 100% 0%, rgba(90,130,255,0.14), transparent 45%),
-                #070b14;
-            color: #e8eefc;
+            background: #FFFFFF;
+            color: #1F2937;
         }
         .block-container { padding-top: 1.2rem; max-width: 1400px; }
-        h1, h2, h3 { letter-spacing: -0.03em; }
+        h1, h2, h3 { letter-spacing: -0.03em; color: #1F2937; }
         .hero-kicker {
             font-size: 0.78rem; font-weight: 600; letter-spacing: 0.16em;
-            text-transform: uppercase; color: #3ee0b1; margin-bottom: 0.2rem;
+            text-transform: uppercase; color: #556B2F; margin-bottom: 0.2rem;
         }
-        .hero-title { font-size: 2.05rem; font-weight: 700; margin: 0 0 0.35rem 0; }
-        .hero-sub { color: #9aa8c7; font-size: 0.98rem; margin-bottom: 1.2rem; }
+        .hero-title { font-size: 2.05rem; font-weight: 700; margin: 0 0 0.35rem 0; color: #1F2937; }
+        .hero-sub { color: #4B5563; font-size: 0.98rem; margin-bottom: 1.2rem; }
         div[data-testid="stMetric"] {
-            background: linear-gradient(180deg, rgba(18,26,43,0.95), rgba(12,18,32,0.92));
-            border: 1px solid rgba(255,255,255,0.06);
+            background: #FFFFFF;
+            border: 1px solid #E5E7EB;
             border-radius: 16px; padding: 14px 16px;
-            box-shadow: 0 12px 40px rgba(0,0,0,0.25);
+            box-shadow: 0 1px 2px rgba(31, 41, 55, 0.06);
         }
-        div[data-testid="stMetric"] label { color: #9aa8c7 !important; }
+        div[data-testid="stMetric"] label { color: #4B5563 !important; }
         div[data-testid="stMetric"] [data-testid="stMetricValue"] {
-            color: #f4f7ff !important; font-weight: 700;
+            color: #1F2937 !important; font-weight: 700;
         }
+        div[data-testid="stMetric"] [data-testid="stMetricDelta"] { color: #556B2F !important; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -234,7 +232,7 @@ def main() -> None:
                         x="churn_probability",
                         color="risk_tier",
                         nbins=20,
-                        color_discrete_map={"Low": "#3ee0b1", "Medium": "#f5c542", "Critical": "#ff5c7a"},
+                        color_discrete_map={"Low": "#556B2F", "Medium": "#CA8A04", "Critical": "#B91C1C"},
                         title="Book risk mix",
                     )
                     fig.update_layout(**PLOTLY_LAYOUT, bargap=0.08)
