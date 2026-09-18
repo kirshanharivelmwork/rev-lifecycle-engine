@@ -471,6 +471,27 @@ def load_engine(path: Path | None = None) -> tuple[ChurnScoringEngine, str]:
     return engine, version
 
 
+def dumps_engine(engine: ChurnScoringEngine, version: str = MODEL_VERSION) -> bytes:
+    return pickle.dumps(
+        {
+            "model_version": version,
+            "production_name": engine.production_name_,
+            "feature_columns": engine.feature_columns_,
+            "engine": engine,
+        },
+        protocol=pickle.HIGHEST_PROTOCOL,
+    )
+
+
+def load_engine_from_bytes(payload: bytes) -> tuple[ChurnScoringEngine, str]:
+    loaded = pickle.loads(payload)
+    engine: ChurnScoringEngine = loaded["engine"]
+    version = str(loaded.get("model_version", MODEL_VERSION))
+    if not getattr(engine, "fitted_", False):
+        raise RuntimeError("Persisted tenant engine is not fitted")
+    return engine, version
+
+
 def load_or_train(tune: bool = False, persist: bool = True) -> tuple[ChurnScoringEngine, str]:
     """Return a production engine, training from processed features if needed."""
     if ENGINE_BUNDLE_PATH.exists():

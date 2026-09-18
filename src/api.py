@@ -16,7 +16,7 @@ if __package__ in {None, ""}:
 
 import pandas as pd
 import requests
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from slowapi.errors import RateLimitExceeded
@@ -36,6 +36,7 @@ from src.paths import (
     MODEL_VERSION,
     PROCESSED_DIR,
 )
+from src.retraining_pipeline import load_tenant_engine
 from src.routers import customers, ingestion, webhooks
 from src.scoring import assign_risk_tier, recommend_playbook, risk_drivers
 
@@ -103,11 +104,31 @@ class DispatchResponse(BaseModel):
     prediction: PredictionResponse
 
 
-def get_engine() -> ChurnScoringEngine:
+def _default_engine() -> ChurnScoringEngine:
     global _ENGINE, _LOADED_VERSION
     if _ENGINE is None:
         _ENGINE, _LOADED_VERSION = load_or_train(tune=False, persist=True)
     return _ENGINE
+
+
+def get_engine(
+    x_org_id: Optional[str] = Header(default=None, alias="X-Org-Id"),
+) -> ChurnScoringEngine:
+    """Resolve a tenant XGBoost bundle from S3/volume; else models/churn_engine.pkl."""
+    tenant = load_tenant_engine(x_org_id)
+    if tenant is not None:
+        return tenant
+    return _default_engine()
+
+
+def get_predict_engine(
+    org: Organization = Depends(get_current_org),
+    fallback: ChurnScoringEngine = Depends(get_engine),
+) -> ChurnScoringEngine:
+    tenant = load_tenant_engine(org.org_id)
+    if tenant is not None:
+        return tenant
+    return fallback
 
 
 @asynccontextmanager
@@ -234,7 +255,7 @@ def predict(
     request: Request,
     payload: CustomerTelemetry,
     org: Organization = Depends(get_current_org),
-    engine: ChurnScoringEngine = Depends(get_engine),
+    engine: ChurnScoringEngine = Depends(get_predict_engine),
 ) -> PredictionResponse:
     try:
         return score_payload(payload, engine, org=org)
@@ -249,7 +270,7 @@ def dispatch_alert(
     request: Request,
     payload: DispatchRequest,
     org: Organization = Depends(get_current_org),
-    engine: ChurnScoringEngine = Depends(get_engine),
+    engine: ChurnScoringEngine = Depends(get_predict_engine),
 ) -> DispatchResponse:
     prediction = score_payload(payload, engine, org=org)
     webhook_url = payload.webhook_url or os.getenv("WEBHOOK_URL")

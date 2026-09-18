@@ -14,6 +14,7 @@ FULL_FUNNEL_FEATURES_PATH = PROCESSED_DIR / "full_funnel_features.csv"
 CHURN_ALERTS_PATH = PROCESSED_DIR / "churn_risk_alerts.csv"
 DISPATCH_LOG_PATH = PROCESSED_DIR / "dispatched_alerts_log.json"
 ENGINE_BUNDLE_PATH = MODELS_DIR / "churn_engine.pkl"
+TENANT_MODELS_DIR = MODELS_DIR / "tenants"
 
 MODEL_VERSION = "1.0.0"
 AT_RISK_THRESHOLD = 0.65
