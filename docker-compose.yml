@@ -1,0 +1,38 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ./bin/start.sh
+    ports:
+      - "8000:8000"
+      - "8501:8501"
+    environment:
+      DATABASE_URL: postgresql+psycopg2://rev:rev@postgres:5432/revlifecycle
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      ALLOW_INSECURE_WEBHOOKS: ${ALLOW_INSECURE_WEBHOOKS:-0}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: rev
+      POSTGRES_PASSWORD: rev
+      POSTGRES_DB: revlifecycle
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rev -d revlifecycle"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  pgdata:

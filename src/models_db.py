@@ -35,6 +35,9 @@ class Organization(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     slack_webhook_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     stripe_webhook_secret: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    resend_api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    alert_cooldown_days: Mapped[int] = mapped_column(Integer, default=DEFAULT_COOLDOWN_DAYS, nullable=False)
+    hitl_mrr_threshold: Mapped[float] = mapped_column(Float, default=1000.0, nullable=False)
 
     accounts: Mapped[list["CustomerAccount"]] = relationship(back_populates="organization")
 

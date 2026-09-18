@@ -222,3 +222,21 @@ def test_renewal_features_and_empirical_audit(enterprise_db) -> None:
     session.commit()
     assert "verified_arr_saved" in audit
     assert audit["outcomes"] >= 0
+
+
+def test_tenant_settings_persist_on_organization(enterprise_db) -> None:
+    session = enterprise_db
+    org = session.get(Organization, ACME_ORG_ID)
+    org.stripe_webhook_secret = "whsec_rotated"
+    org.slack_webhook_url = "https://hooks.slack.com/services/T/B/demo"
+    org.resend_api_key = "re_test_key"
+    org.alert_cooldown_days = 21
+    org.hitl_mrr_threshold = 2500.0
+    session.commit()
+    session.expire_all()
+    reloaded = session.get(Organization, ACME_ORG_ID)
+    assert reloaded.stripe_webhook_secret == "whsec_rotated"
+    assert reloaded.slack_webhook_url.endswith("/demo")
+    assert reloaded.resend_api_key == "re_test_key"
+    assert reloaded.alert_cooldown_days == 21
+    assert reloaded.hitl_mrr_threshold == pytest.approx(2500.0)

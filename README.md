@@ -206,7 +206,61 @@ Open `notebooks/saas_retention_deepdive.ipynb` for Front Door vs. Back Door EDA,
 
 ---
 
+## System Capabilities & Architecture Audit
+
+This inventory is the current production surface of **rev-lifecycle-engine**.
+
+### 1. Data Pipeline & Temporal Dynamics
+
+- Unified Front Door + Back Door extracts merge on `customer_id` after typed schema validation.
+- Live and batch feature frames include engagement composites (`engagement_index`, `high_risk_inactivity`, LTV:CAC).
+- Temporal renewal dynamics: `days_until_renewal` and `contract_renewal_urgency_ratio` (inactivity relative to renewal proximity) in `src/feature_builder.py` and `src/data_pipeline.py`.
+- Webhook telemetry (Segment/PostHog login, feature, ticket, payment-failure events) rolls into the same scoring schema.
+
+### 2. Statistical Rigor & Hypothesis Testing
+
+Welch's two-sample t-test on feature adoption (churned vs retained): \(t = -26.53\), \(p < 10^{-150}\), Cohen's \(d = -1.06\) (large). Chi-square test of independence between churn and acquisition channel: \(\chi^2 = 314.93\) (d.f. = 3, Cramér's V = 0.25). Logistic design matrices are VIF-screened (drop until VIF \(\le 10\)) before odds ratios are reported.
+
+### 3. ML Scoring & Calibration
+
+Baseline **logistic regression** (scaled features, odds ratios, Wald intervals) versus a **GridSearchCV-tuned XGBoost** production classifier. Reported calibration on the seeded hold-out: ROC-AUC **0.8827**, PR-AUC **0.6019**, Brier score **0.1374**. If the XGBoost native library cannot load, scoring falls back to Random Forest. Persist `models/churn_engine.pkl` (`MODEL_VERSION = 1.0.0`).
+
+### 4. Enterprise Multi-Tenancy & Data Isolation
+
+SQLAlchemy schema: `Organization`, `CustomerAccount`, `TelemetryEvent`, `ChurnAssessment`, `DispatchedAction`, `IngestionJob`, `InterventionOutcome`. Hashed `X-API-Key` credentials; unique `(org_id, customer_external_id)`. Tenant boundary enforcement is verified on account queries and webhook upserts (`tests/test_commercial_engine.py`). SQLite locally; PostgreSQL in Docker Compose.
+
+### 5. Security & Ingestion Infrastructure
+
+Cryptographic Stripe signature validation via `stripe.Webhook.construct_event()` on the raw body and `Stripe-Signature`. Invalid signatures return HTTP 400. `ALLOW_INSECURE_WEBHOOKS` is a local-only bypass when no secret is configured. Stripe and telemetry routes persist an `IngestionJob`, return **HTTP 202** with `job_id`, and run transform → XGBoost → alerts asynchronously (`src/tasks.py`, retries).
+
+### 6. Retention Action Engine & Alert Cooldown
+
+Dispatcher fires when \(p \ge 0.65\). Default **14-day** alert suppression (`last_contacted_at`, `suppressed_until`, tenant-configurable 7–30 days) prevents CSM fatigue; remaining Medium risk logs `status="suppressed_cooldown"` and skips outbound APIs. Critical override when \(p > 0.85\). Live Slack Block Kit alerts and hyper-personalized Resend emails (or `simulated` when credentials are absent).
+
+### 7. HITL Staging & Empirical ROI Attribution
+
+Human-in-the-loop review queue for high-ACV accounts (\(MRR > \$1{,}000\), tenant-adjustable). Staging tab: Approve Dispatch / Dismiss False Positive. `InterventionOutcome` plus `audit_intervention_outcomes(org_id)` roll 30/60/90-day Active / Churned / Downgraded status into **verified saved ARR** (not a static 35% hypothetical).
+
+Self-serve **Tenant Settings & Integrations** tab stores Stripe webhook signing secret, Slack incoming webhook URL, Resend API key (masked password fields; blank keeps the stored value), cooldown days, and HITL threshold on the active `Organization` row.
+
+---
+
+## Production Docker & Compose
+
+```bash
+docker compose up --build
+```
+
+- **app** (`Dockerfile`, `python:3.10-slim`, `build-essential` + `libgomp1`): seeds the demo book at image build, then `bin/start.sh` launches Uvicorn `:8000` and Streamlit `:8501` with SIGTERM/SIGINT cleanup.
+- **postgres** (`postgres:15-alpine`): persistent `pgdata` volume and `pg_isready` healthcheck.
+- Runtime env: `DATABASE_URL`, `STRIPE_WEBHOOK_SECRET`, `SLACK_WEBHOOK_URL`, `RESEND_API_KEY`.
+
+Local without Docker: `uvicorn src.api:app --host 0.0.0.0 --port 8000` and `streamlit run app/dashboard.py --server.port 8501`.
+
+---
+
 ## Commercial Platform (Multi-Tenant)
+
 
 Rev Lifecycle Engine is a **B2B revenue intelligence product**: each customer is an `Organization` with hashed `X-API-Key` credentials, isolated accounts, live Stripe/Segment ingestion, calibrated churn scoring, and automated Slack + Resend save motions.
 
@@ -425,6 +479,7 @@ macOS note: XGBoost wheels need OpenMP (`brew install libomp`). The scorer falls
 | `test_telemetry_webhook_returns_202_job_id` | Telemetry ingest acknowledges with job ID |
 | `test_alert_suppressed_during_14_day_cooldown` | Medium-risk repeat alerts do not hit Slack/Resend |
 | `test_hitl_approval_workflow` | High-MRR accounts require Approve Dispatch before fire |
+| `test_tenant_settings_persist_on_organization` | Stripe/Slack/Resend secrets and cooldown/HITL policy persist on `Organization` |
 
 ---
 

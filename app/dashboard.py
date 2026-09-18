@@ -154,19 +154,7 @@ def main() -> None:
         selected_name = st.sidebar.selectbox("Organization", list(names), index=default_ix)
         org = names[selected_name]
         st.sidebar.caption(f"`{org.org_id}` · {org.plan_tier} plan")
-        with st.sidebar.expander("Integrations & tenant settings", expanded=False):
-            slack_url = st.text_input("Slack webhook URL", value=org.slack_webhook_url or "", type="default")
-            stripe_secret = st.text_input(
-                "Stripe webhook secret",
-                value=org.stripe_webhook_secret or "",
-                type="password",
-            )
-            if st.button("Save tenant integrations"):
-                org.slack_webhook_url = slack_url.strip() or None
-                org.stripe_webhook_secret = stripe_secret.strip() or None
-                session.commit()
-                st.success("Saved Slack webhook and Stripe signing secret for this organization.")
-                st.rerun()
+        st.sidebar.caption("Configure Stripe, Slack, Resend, and HITL in the Tenant Settings tab.")
         st.sidebar.divider()
 
         book = _latest_assessments(session, org.org_id)
@@ -177,6 +165,8 @@ def main() -> None:
         at_risk_arr = float(at_risk["arr"].sum()) if not at_risk.empty else 0.0
         audit = audit_intervention_outcomes(org.org_id, session=session)
         verified_arr = float(audit.get("verified_arr_saved") or 0.0)
+        hitl_floor = float(org.hitl_mrr_threshold or HITL_MRR_THRESHOLD)
+        cooldown_default = int(org.alert_cooldown_days or 14)
         dispatched_count = len(actions)
 
         st.markdown(
@@ -186,11 +176,13 @@ def main() -> None:
         st.markdown('<p class="hero-title">Executive Revenue Command Center</p>', unsafe_allow_html=True)
         st.markdown(
             f'<p class="hero-sub">{selected_name} · {n_subs:,} monitored subscribers · '
-            f"model {MODEL_VERSION} · HITL threshold ${HITL_MRR_THRESHOLD:,.0f} MRR</p>",
+            f"model {MODEL_VERSION} · HITL threshold ${hitl_floor:,.0f} · cooldown {cooldown_default}d</p>",
             unsafe_allow_html=True,
         )
 
-        command, staging = st.tabs(["Command Center", "Staging & Approval Queue"])
+        command, staging, settings = st.tabs(
+            ["Command Center", "Staging & Approval Queue", "Tenant Settings & Integrations"]
+        )
 
         with command:
             c1, c2, c3, c4 = st.columns(4)
@@ -278,7 +270,7 @@ def main() -> None:
         with staging:
             st.markdown("### Pending CSM approval")
             st.caption(
-                f"Accounts with MRR > ${HITL_MRR_THRESHOLD:,.0f} wait in this queue before Slack/Resend fire. "
+                f"Accounts with MRR > ${hitl_floor:,.0f} wait in this queue before Slack/Resend fire. "
                 "Verified ARR saved is shown next to prospective at-risk ARR."
             )
             v1, v2 = st.columns(2)
@@ -315,6 +307,71 @@ def main() -> None:
                         dismiss_false_positive(account.id, org.org_id, session=session)
                         session.commit()
                         st.rerun()
+
+        with settings:
+            st.markdown("### Tenant Settings & Integrations")
+            st.caption(
+                "Secrets are stored on this organization row and never written back into the form. "
+                "Leave a password field blank to keep the current value."
+            )
+            configured = []
+            if org.stripe_webhook_secret:
+                configured.append("Stripe signing secret")
+            if org.slack_webhook_url:
+                configured.append("Slack webhook")
+            if org.resend_api_key:
+                configured.append("Resend API key")
+            if configured:
+                st.success("Configured: " + " · ".join(configured))
+            else:
+                st.info("No integration secrets saved for this tenant yet.")
+
+            stripe_secret = st.text_input(
+                "Stripe webhook signing secret (`STRIPE_WEBHOOK_SECRET`)",
+                value="",
+                type="password",
+                help="whsec_… from the Stripe Dashboard. Blank keeps the stored secret.",
+            )
+            slack_url = st.text_input(
+                "Slack incoming webhook URL (`SLACK_WEBHOOK_URL`)",
+                value="",
+                type="password",
+                help="https://hooks.slack.com/services/… Blank keeps the stored URL.",
+            )
+            resend_key = st.text_input(
+                "Resend API key (`RESEND_API_KEY`)",
+                value="",
+                type="password",
+                help="re_… key used for retention emails. Blank keeps the stored key.",
+            )
+            cooldown_days = st.slider(
+                "Automated alert cooldown (days)",
+                min_value=7,
+                max_value=30,
+                value=int(org.alert_cooldown_days or 14),
+            )
+            hitl_arr = st.number_input(
+                "Minimum ARR threshold for human-in-the-loop review",
+                min_value=0.0,
+                value=float(org.hitl_mrr_threshold or HITL_MRR_THRESHOLD),
+                step=100.0,
+                help="Accounts above this MRR/ARR-proxy wait in Staging until a CSM approves.",
+            )
+            if st.button("Save tenant settings", type="primary"):
+                if stripe_secret.strip():
+                    org.stripe_webhook_secret = stripe_secret.strip()
+                if slack_url.strip():
+                    org.slack_webhook_url = slack_url.strip()
+                if resend_key.strip():
+                    org.resend_api_key = resend_key.strip()
+                org.alert_cooldown_days = int(cooldown_days)
+                org.hitl_mrr_threshold = float(hitl_arr)
+                session.query(CustomerAccount).filter(CustomerAccount.org_id == org.org_id).update(
+                    {CustomerAccount.cooldown_days: int(cooldown_days)}
+                )
+                session.commit()
+                st.success("Saved integrations and policy for this organization.")
+                st.rerun()
     finally:
         session.close()
 

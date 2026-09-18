@@ -55,6 +55,8 @@ def seed_organization(session, org_id: str, name: str, api_key: str, plan: str) 
         api_key=hash_api_key(api_key),
         plan_tier=plan,
         created_at=utcnow(),
+        alert_cooldown_days=14,
+        hitl_mrr_threshold=1000.0,
     )
     session.add(org)
     session.flush()

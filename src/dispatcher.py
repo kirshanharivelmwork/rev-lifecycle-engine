@@ -152,8 +152,8 @@ def _post_slack(payload: dict[str, Any], webhook_url: Optional[str] = None) -> t
         return "failed", None
 
 
-def _post_resend(email: dict[str, str]) -> tuple[str, Optional[int]]:
-    api_key = os.getenv("RESEND_API_KEY")
+def _post_resend(email: dict[str, str], api_key: Optional[str] = None) -> tuple[str, Optional[int]]:
+    api_key = api_key or os.getenv("RESEND_API_KEY")
     body = {
         "from": email["from"],
         "to": [email["to"]],
@@ -194,13 +194,25 @@ def _record_action(
     return action
 
 
-def _in_cooldown(account: CustomerAccount, now) -> bool:
+def _org_cooldown_days(org: Optional[Organization], account: CustomerAccount) -> int:
+    if org is not None and org.alert_cooldown_days:
+        return int(org.alert_cooldown_days)
+    return int(account.cooldown_days or DEFAULT_COOLDOWN_DAYS)
+
+
+def _org_hitl_threshold(org: Optional[Organization]) -> float:
+    if org is not None and org.hitl_mrr_threshold is not None:
+        return float(org.hitl_mrr_threshold)
+    return float(HITL_MRR_THRESHOLD)
+
+
+def _in_cooldown(account: CustomerAccount, now, org: Optional[Organization] = None) -> bool:
     if account.suppressed_until and now < account.suppressed_until:
         return True
     last = account.last_contacted_at
     if not last:
         return False
-    window = int(account.cooldown_days or DEFAULT_COOLDOWN_DAYS)
+    window = _org_cooldown_days(org, account)
     return (now - last) < timedelta(days=window)
 
 
@@ -210,6 +222,8 @@ def _fire_channels(
     scored: dict[str, Any],
     *,
     slack_url: Optional[str],
+    resend_api_key: Optional[str] = None,
+    cooldown_days: Optional[int] = None,
 ) -> list[DispatchedAction]:
     actions: list[DispatchedAction] = []
     slack_payload = _slack_blocks(account, scored)
@@ -223,7 +237,7 @@ def _fire_channels(
     record_intervention_outcome(session, account, slack_action)
 
     email = _email_copy(account, scored)
-    email_status, email_http = _post_resend(email)
+    email_status, email_http = _post_resend(email, api_key=resend_api_key)
     email_payload = {
         **email,
         "http_status": email_http,
@@ -235,8 +249,10 @@ def _fire_channels(
     actions.append(email_action)
     record_intervention_outcome(session, account, email_action)
     now = utcnow()
+    window = int(cooldown_days or account.cooldown_days or DEFAULT_COOLDOWN_DAYS)
+    account.cooldown_days = window
     account.last_contacted_at = now
-    account.suppressed_until = now + timedelta(days=int(account.cooldown_days or DEFAULT_COOLDOWN_DAYS))
+    account.suppressed_until = now + timedelta(days=window)
     if account.approval_status == "pending":
         account.approval_status = "approved"
     return actions
@@ -263,6 +279,10 @@ def evaluate_and_trigger_actions(
             raise AccountNotFoundError(f"Account {account_id} not found for org {org_id}")
 
         org = session.get(Organization, org_id)
+        cooldown_days = _org_cooldown_days(org, account)
+        hitl_floor = _org_hitl_threshold(org)
+        slack_url = (org.slack_webhook_url if org else None) or os.getenv("SLACK_WEBHOOK_URL") or os.getenv("WEBHOOK_URL")
+        resend_key = (org.resend_api_key if org else None) or os.getenv("RESEND_API_KEY")
         if engine is None:
             engine, _ = load_or_train(tune=False, persist=True)
         scored = _score_account(session, account, engine)
@@ -271,7 +291,7 @@ def evaluate_and_trigger_actions(
         triggered = probability >= AT_RISK_THRESHOLD or force
         now = utcnow()
         escalate = probability > ESCALATION_PROBABILITY
-        cooldown = _in_cooldown(account, now) and not escalate and not force
+        cooldown = _in_cooldown(account, now, org=org) and not escalate and not force
 
         if triggered and cooldown:
             payload = {
@@ -281,7 +301,7 @@ def evaluate_and_trigger_actions(
             }
             actions.append(_record_action(session, account, "system", payload, "suppressed_cooldown"))
             result_status = "suppressed_cooldown"
-        elif triggered and float(account.mrr or 0) > HITL_MRR_THRESHOLD and not force and not escalate:
+        elif triggered and float(account.mrr or 0) > hitl_floor and not force and not escalate:
             account.approval_status = "pending"
             payload = {
                 "trigger_reason": scored["drivers"],
@@ -292,7 +312,16 @@ def evaluate_and_trigger_actions(
             actions.append(_record_action(session, account, "approval_queue", payload, "pending_approval"))
             result_status = "pending_approval"
         elif triggered:
-            actions.extend(_fire_channels(session, account, scored, slack_url=org.slack_webhook_url if org else None))
+            actions.extend(
+                _fire_channels(
+                    session,
+                    account,
+                    scored,
+                    slack_url=slack_url,
+                    resend_api_key=resend_key,
+                    cooldown_days=cooldown_days,
+                )
+            )
             result_status = "dispatched"
         else:
             result_status = "below_threshold"
@@ -343,7 +372,14 @@ def approve_pending_dispatch(
             engine, _ = load_or_train(tune=False, persist=True)
         scored = _score_account(session, account, engine)
         account.approval_status = "approved"
-        actions = _fire_channels(session, account, scored, slack_url=org.slack_webhook_url if org else None)
+        actions = _fire_channels(
+            session,
+            account,
+            scored,
+            slack_url=(org.slack_webhook_url if org else None) or os.getenv("SLACK_WEBHOOK_URL"),
+            resend_api_key=(org.resend_api_key if org else None) or os.getenv("RESEND_API_KEY"),
+            cooldown_days=_org_cooldown_days(org, account),
+        )
         if owns_session:
             session.commit()
         else:
@@ -376,7 +412,9 @@ def dismiss_false_positive(
             raise AccountNotFoundError(f"Account {account_id} not found for org {org_id}")
         account.approval_status = "dismissed"
         now = utcnow()
-        account.suppressed_until = now + timedelta(days=int(account.cooldown_days or DEFAULT_COOLDOWN_DAYS))
+        org = session.get(Organization, org_id)
+        window = _org_cooldown_days(org, account)
+        account.suppressed_until = now + timedelta(days=window)
         action = _record_action(
             session,
             account,
