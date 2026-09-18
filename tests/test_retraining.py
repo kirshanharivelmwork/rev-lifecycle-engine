@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from src.api import app, get_engine, get_predict_engine
 from src.auth import get_current_org
+from tests.conftest import clerk_auth_headers
 from src.churn_model import ChurnScoringEngine, dumps_engine
 from src.database import get_session_factory, init_db, reset_engine
 from src.models_db import Organization, TelemetryEvent
@@ -105,6 +106,7 @@ def test_predict_uses_tenant_model_without_breaking_override(tenant_db, processe
     with TestClient(app) as client:
         response = client.post(
             "/v1/predict",
+            headers=clerk_auth_headers(org_id=ACME_ORG_ID, role="Member"),
             json={
                 "customer_id": "cus_retrain",
                 "acquisition_channel": "Paid Search",

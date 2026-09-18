@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
-from src.auth import get_current_org
+from src.auth import AuthUser, get_current_org, require_admin_role
 from src.billing import INGEST_LIMIT, SubscriptionInactive, billing_json_response, limiter
 from src.churn_model import ChurnScoringEngine, load_or_train
 from src.database import init_db
@@ -37,7 +37,7 @@ from src.paths import (
     PROCESSED_DIR,
 )
 from src.retraining_pipeline import load_tenant_engine
-from src.routers import customers, ingestion, webhooks
+from src.routers import billing, customers, ingestion, webhooks
 from src.scoring import assign_risk_tier, recommend_playbook, risk_drivers
 
 LOGGER = logging.getLogger(__name__)
@@ -160,6 +160,8 @@ async def _rate_limited(_request: Request, _exc: RateLimitExceeded):
 app.include_router(ingestion.router, prefix="/api/v1")
 app.include_router(webhooks.router, prefix="/api/v1")
 app.include_router(customers.router, prefix="/api/v1")
+app.include_router(billing.router, prefix="/api/v1")
+app.include_router(billing.router, prefix="/v1")
 
 
 def score_payload(
@@ -244,7 +246,7 @@ def health(engine: ChurnScoringEngine = Depends(get_engine)) -> dict[str, Any]:
         "model_name": engine.production_name_,
         "at_risk_threshold": AT_RISK_THRESHOLD,
         "critical_threshold": CRITICAL_THRESHOLD,
-        "auth": "X-API-Key required on non-webhook routes",
+        "auth": "Clerk JWT bearer token required on non-webhook routes; Admin role for billing and dispatcher",
     }
 
 
@@ -269,6 +271,7 @@ def predict(
 def dispatch_alert(
     request: Request,
     payload: DispatchRequest,
+    _admin: AuthUser = Depends(require_admin_role),
     org: Organization = Depends(get_current_org),
     engine: ChurnScoringEngine = Depends(get_predict_engine),
 ) -> DispatchResponse:

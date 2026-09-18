@@ -16,7 +16,8 @@ from src.models_db import (
     SystemAuditLog,
     TelemetryEvent,
 )
-from src.seed_commercial_demo import ACME_API_KEY, ACME_ORG_ID, seed_commercial_demo
+from src.seed_commercial_demo import ACME_ORG_ID, seed_commercial_demo
+from tests.conftest import clerk_auth_headers
 
 
 @pytest.fixture()
@@ -87,7 +88,7 @@ def test_gdpr_customer_deletion_cascade(resilience_db) -> None:
         assert missing.status_code == 401
         deleted = client.delete(
             f"/api/v1/customers/{ext}",
-            headers={"X-API-Key": ACME_API_KEY},
+            headers=clerk_auth_headers(org_id=ACME_ORG_ID, role="Member"),
         )
     assert deleted.status_code == 200, deleted.text
     assert deleted.json()["deleted"] == ext
@@ -134,7 +135,7 @@ def test_402_payment_required_for_delinquent_tenant(resilience_db) -> None:
     with TestClient(app) as client:
         response = client.post(
             "/v1/predict",
-            headers={"X-API-Key": ACME_API_KEY},
+            headers=clerk_auth_headers(org_id=ACME_ORG_ID, role="Member"),
             json={
                 "customer_id": "cus_bill",
                 "acquisition_channel": "Paid Search",

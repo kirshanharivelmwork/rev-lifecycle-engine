@@ -147,6 +147,15 @@ def resolve_org_id_from_request(session: Session, request: Optional[Request]) ->
         exists = session.query(Organization.org_id).filter(Organization.org_id == org_header).one_or_none()
         if exists:
             return org_header
+    authorization = request.headers.get("Authorization") or request.headers.get("authorization") or ""
+    if authorization.lower().startswith("bearer "):
+        from src.auth import extract_org_id_from_bearer
+
+        jwt_org = extract_org_id_from_bearer(authorization.split(" ", 1)[1].strip())
+        if jwt_org:
+            exists = session.query(Organization.org_id).filter(Organization.org_id == jwt_org).one_or_none()
+            if exists:
+                return jwt_org
     api_key = request.headers.get("X-API-Key") or request.headers.get("x-api-key")
     if not api_key:
         return None

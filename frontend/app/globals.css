@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 220 26% 17%;
+    --card: 0 0% 100%;
+    --card-foreground: 220 26% 17%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 26% 17%;
+    --primary: 82 39% 30%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 20% 97%;
+    --secondary-foreground: 220 26% 17%;
+    --muted: 210 20% 97%;
+    --muted-foreground: 215 14% 34%;
+    --accent: 82 28% 94%;
+    --accent-foreground: 82 39% 24%;
+    --destructive: 0 72% 42%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 82 39% 30%;
+    --chart-1: 82 39% 30%;
+    --chart-2: 45 96% 40%;
+    --chart-3: 0 72% 42%;
+    --chart-4: 215 14% 45%;
+    --chart-5: 210 16% 82%;
+    --radius: 1rem;
+    --sidebar: 0 0% 100%;
+    --sidebar-foreground: 220 26% 17%;
+    --sidebar-primary: 82 39% 30%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 82 28% 94%;
+    --sidebar-accent-foreground: 82 39% 24%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 82 39% 30%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+
+  body {
+    font-family: var(--font-ibm-plex-sans), "IBM Plex Sans", sans-serif;
+  }
+
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.03em;
+  }
+}

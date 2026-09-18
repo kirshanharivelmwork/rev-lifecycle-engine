@@ -24,8 +24,11 @@ def _rate_limit_enabled() -> bool:
 
 
 def _tenant_rate_key(request: Request) -> str:
+    authorization = request.headers.get("authorization") or request.headers.get("Authorization") or ""
+    bearer = authorization.split(" ", 1)[1].strip() if authorization.lower().startswith("bearer ") else ""
     return (
-        request.headers.get("x-api-key")
+        bearer
+        or request.headers.get("x-api-key")
         or request.headers.get("X-API-Key")
         or request.headers.get("x-org-id")
         or request.headers.get("X-Org-Id")

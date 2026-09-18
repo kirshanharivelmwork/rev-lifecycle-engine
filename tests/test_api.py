@@ -1,4 +1,4 @@
-"""Integration tests for the production scoring API."""
+"""Integration tests for the production scoring API under Clerk JWT RBAC."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from src.auth import get_current_org
 from src.churn_model import ChurnScoringEngine
 from src.models_db import Organization
 from src.paths import CRITICAL_THRESHOLD, MODEL_VERSION
+from tests.conftest import clerk_auth_headers
 
 HIGH_RISK = {
     "customer_id": "CUST_TEST_HIGH",
@@ -48,6 +49,7 @@ def client(processed_frame):
     app.dependency_overrides[get_engine] = lambda: engine
     app.dependency_overrides[get_current_org] = lambda: demo_org
     with TestClient(app) as test_client:
+        test_client.headers.update(clerk_auth_headers(org_id="org_test", role="Admin"))
         yield test_client
     app.dependency_overrides.clear()
 
@@ -60,6 +62,7 @@ def test_health_ok(client: TestClient) -> None:
     assert body["model_version"] == MODEL_VERSION
     assert body["model_name"] in {"xgboost", "random_forest"}
     assert "critical_threshold" in body
+    assert "Clerk JWT" in body["auth"]
 
 
 def test_predict_returns_valid_payload(client: TestClient) -> None:
@@ -99,10 +102,15 @@ def test_dispatch_alert_logs_payload(client: TestClient, tmp_path, monkeypatch) 
     assert isinstance(history, list) and history
     assert history[-1]["prediction"]["customer_id"] == "CUST_TEST_HIGH"
 
-    # Explicit skip path: healthy account should not fire the critical webhook.
     skip = client.post("/v1/dispatch-alert", json=HEALTHY)
     assert skip.status_code == 200
     skip_body = skip.json()
     if skip_body["prediction"]["churn_probability"] <= CRITICAL_THRESHOLD:
         assert skip_body["dispatched"] is False
         assert "skipped" in skip_body["reason"] or skip_body["prediction"]["churn_probability"] <= CRITICAL_THRESHOLD
+
+
+def test_member_jwt_cannot_dispatch(client: TestClient) -> None:
+    member = clerk_auth_headers(org_id="org_test", role="Member")
+    response = client.post("/v1/dispatch-alert", json=HIGH_RISK, headers=member)
+    assert response.status_code == 403
