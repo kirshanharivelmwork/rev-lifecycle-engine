@@ -43,6 +43,8 @@ def update_tenant_policy(
     hubspot_access_token: Optional[str] = None,
     salesforce_access_token: Optional[str] = None,
     salesforce_instance_url: Optional[str] = None,
+    apollo_api_key: Optional[str] = None,
+    instantly_api_key: Optional[str] = None,
 ) -> Organization:
     old = {
         "alert_cooldown_days": org.alert_cooldown_days,
@@ -64,6 +66,10 @@ def update_tenant_policy(
         org.salesforce_access_token = salesforce_access_token
     if salesforce_instance_url:
         org.salesforce_instance_url = salesforce_instance_url.rstrip("/")
+    if apollo_api_key:
+        org.apollo_api_key = apollo_api_key
+    if instantly_api_key:
+        org.instantly_api_key = instantly_api_key
     new = {
         "alert_cooldown_days": org.alert_cooldown_days,
         "hitl_mrr_threshold": org.hitl_mrr_threshold,

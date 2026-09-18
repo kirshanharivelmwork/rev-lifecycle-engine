@@ -22,6 +22,8 @@ from src.models_db import (
     CustomerAccount,
     DispatchedAction,
     Organization,
+    OutboundCampaign,
+    ProspectLead,
     SystemAuditLog,
     utcnow,
 )
@@ -154,7 +156,7 @@ def main() -> None:
         selected_name = st.sidebar.selectbox("Organization", list(names), index=default_ix)
         org = names[selected_name]
         st.sidebar.caption(f"`{org.org_id}` · {org.plan_tier} plan")
-        st.sidebar.caption("Configure Stripe, Slack, Resend, and HITL in the Tenant Settings tab.")
+        st.sidebar.caption("Configure Stripe, Slack, Resend, Apollo, Instantly, and HITL in Tenant Settings.")
         st.sidebar.divider()
 
         book = _latest_assessments(session, org.org_id)
@@ -180,8 +182,13 @@ def main() -> None:
             unsafe_allow_html=True,
         )
 
-        command, staging, settings = st.tabs(
-            ["Command Center", "Staging & Approval Queue", "Tenant Settings & Integrations"]
+        command, acquisition, staging, settings = st.tabs(
+            [
+                "Command Center",
+                "Front Door: Acquisition",
+                "Staging & Approval Queue",
+                "Tenant Settings & Integrations",
+            ]
         )
 
         with command:
@@ -267,6 +274,67 @@ def main() -> None:
                     },
                 )
 
+        with acquisition:
+            st.markdown("### Front Door: Acquisition")
+            st.caption(
+                "Apollo ICP ingest, heuristic conversion scoring, and Instantly sequence sync — "
+                "isolated per tenant with the same RLS and DLQ path as retention jobs."
+            )
+            today_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            prospects = (
+                session.query(ProspectLead)
+                .filter(ProspectLead.org_id == org.org_id)
+                .order_by(ProspectLead.conversion_score.desc(), ProspectLead.created_at.desc())
+                .all()
+            )
+            sourced_today = [p for p in prospects if p.created_at and p.created_at >= today_start]
+            high_intent = [p for p in prospects if (p.conversion_score or 0) > 80]
+            dispatched_emails = (
+                session.query(OutboundCampaign)
+                .filter(OutboundCampaign.org_id == org.org_id)
+                .count()
+            )
+            a1, a2, a3 = st.columns(3)
+            a1.metric("New Leads Sourced", f"{len(sourced_today):,}", f"{len(prospects):,} in book")
+            a2.metric("High-Intent Prospects", f"{len(high_intent):,}", "score > 80")
+            a3.metric("Cold Emails Dispatched", f"{int(dispatched_emails):,}")
+            ranked = sourced_today or prospects
+            table_rows = []
+            for lead in ranked[:40]:
+                latest_campaign = (
+                    session.query(OutboundCampaign)
+                    .filter(
+                        OutboundCampaign.org_id == org.org_id,
+                        OutboundCampaign.prospect_lead_id == lead.id,
+                    )
+                    .order_by(OutboundCampaign.created_at.desc())
+                    .first()
+                )
+                table_rows.append(
+                    {
+                        "company": lead.company_name,
+                        "decision_maker": lead.decision_maker_name,
+                        "email": lead.email,
+                        "conversion_score": lead.conversion_score,
+                        "status": lead.status,
+                        "sync_status": latest_campaign.status if latest_campaign else "not_synced",
+                        "campaign_id": latest_campaign.campaign_id if latest_campaign else "",
+                    }
+                )
+            frame = pd.DataFrame(table_rows)
+            st.markdown("### Today's highest-scored prospects")
+            if frame.empty:
+                st.info("No Front Door prospects for this tenant yet. Save Apollo credentials and run the daily outbound engine.")
+            else:
+                st.dataframe(
+                    frame,
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "conversion_score": st.column_config.NumberColumn("Conversion score", format="%.0f"),
+                    },
+                )
+
         with staging:
             st.markdown("### Pending CSM approval")
             st.caption(
@@ -325,6 +393,10 @@ def main() -> None:
                 configured.append("HubSpot")
             if org.salesforce_access_token:
                 configured.append("Salesforce")
+            if org.apollo_api_key:
+                configured.append("Apollo")
+            if org.instantly_api_key:
+                configured.append("Instantly")
             if configured:
                 st.success("Configured: " + " · ".join(configured))
             else:
@@ -365,6 +437,18 @@ def main() -> None:
                 value=org.salesforce_instance_url or "",
                 help="e.g. https://yourorg.my.salesforce.com",
             )
+            apollo_key = st.text_input(
+                "Apollo API key",
+                value="",
+                type="password",
+                help="Masked. Blank keeps the stored Apollo key.",
+            )
+            instantly_key = st.text_input(
+                "Instantly API key",
+                value="",
+                type="password",
+                help="Masked. Blank keeps the stored Instantly key.",
+            )
             cooldown_days = st.slider(
                 "Automated alert cooldown (days)",
                 min_value=7,
@@ -393,6 +477,8 @@ def main() -> None:
                     hubspot_access_token=hubspot_token.strip() or None,
                     salesforce_access_token=salesforce_token.strip() or None,
                     salesforce_instance_url=salesforce_instance.strip() or None,
+                    apollo_api_key=apollo_key.strip() or None,
+                    instantly_api_key=instantly_key.strip() or None,
                 )
                 session.query(CustomerAccount).filter(CustomerAccount.org_id == org.org_id).update(
                     {CustomerAccount.cooldown_days: int(cooldown_days)}

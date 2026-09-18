@@ -60,6 +60,8 @@ def test_rls_table_list_covers_required_models() -> None:
     assert "churn_assessments" in RLS_TABLES
     assert "dispatched_actions" in RLS_TABLES
     assert "system_audit_logs" in RLS_TABLES
+    assert "prospect_leads" in RLS_TABLES
+    assert "outbound_campaigns" in RLS_TABLES
 
 
 def test_pool_checkin_reset_helper_is_noop_on_sqlite(tmp_path, monkeypatch) -> None:

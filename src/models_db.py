@@ -42,6 +42,8 @@ class Organization(Base):
     hubspot_access_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     salesforce_access_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     salesforce_instance_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    apollo_api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    instantly_api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     accounts: Mapped[list["CustomerAccount"]] = relationship(back_populates="organization")
 
@@ -219,3 +221,48 @@ class SystemAuditLog(Base):
     old_value: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True)
     new_value: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class ProspectLead(Base):
+    __tablename__ = "prospect_leads"
+    __table_args__ = (
+        UniqueConstraint("org_id", "email", name="uq_org_prospect_email"),
+        Index("ix_prospects_org_score", "org_id", "conversion_score"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    org_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.org_id", ondelete="CASCADE"), nullable=False
+    )
+    company_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    decision_maker_name: Mapped[str] = mapped_column(String(160), default="", nullable=False)
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    linkedin_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    intent_signals: Mapped[Optional[Any]] = mapped_column(JSON, default=list)
+    conversion_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="uncontacted", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+    campaigns: Mapped[list["OutboundCampaign"]] = relationship(back_populates="lead")
+
+
+class OutboundCampaign(Base):
+    __tablename__ = "outbound_campaigns"
+    __table_args__ = (Index("ix_campaigns_org_lead", "org_id", "prospect_lead_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    org_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.org_id", ondelete="CASCADE"), nullable=False
+    )
+    prospect_lead_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("prospect_leads.id", ondelete="CASCADE"), nullable=False
+    )
+    vendor: Mapped[str] = mapped_column(String(32), default="instantly", nullable=False)
+    campaign_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    vendor_lead_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="queued", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    last_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    lead: Mapped["ProspectLead"] = relationship(back_populates="campaigns")

@@ -114,3 +114,84 @@ try:  # Optional Celery compatibility; unused unless Celery is installed.
             raise self.retry(exc=exc, countdown=2)
 except Exception:  # pragma: no cover
     process_ingestion_job_celery = None  # type: ignore[assignment]
+
+
+def enqueue_instantly_push(lead_id: str, campaign_id: str) -> None:
+    """Background Instantly dispatch for high-intent Front Door leads."""
+    import asyncio
+    import threading
+
+    def _run() -> None:
+        from src.integrations.acquisition import push_to_instantly
+
+        asyncio.run(push_to_instantly(lead_id, campaign_id))
+
+    threading.Thread(target=_run, daemon=True, name="instantly-push").start()
+
+
+async def run_daily_outbound_engine(
+    org_id: str,
+    *,
+    search_params: Optional[dict[str, Any]] = None,
+    campaign_id: Optional[str] = None,
+    session: Optional[Any] = None,
+    client: Optional[Any] = None,
+) -> dict[str, Any]:
+    """Fetch Apollo ICP leads, score them, and push conversion_score > 80 to Instantly."""
+    import os
+
+    from src.conversion_model import apply_lead_score, is_high_intent
+    from src.integrations.acquisition import fetch_apollo_leads, push_to_instantly
+    from src.models_db import ProspectLead
+    from src.rls import set_tenant_context
+
+    owns_session = session is None
+    if session is None:
+        session = get_session_factory()()
+    campaign = campaign_id or os.getenv("INSTANTLY_CAMPAIGN_ID") or "default"
+    try:
+        set_tenant_context(session, org_id)
+        fetched = await fetch_apollo_leads(
+            org_id,
+            search_params or {},
+            session=session,
+            client=client,
+            auto_enqueue=False,
+        )
+        leads = session.query(ProspectLead).filter(ProspectLead.org_id == org_id).all()
+        scored = 0
+        dispatched = 0
+        dead_letters = 0
+        for lead in leads:
+            apply_lead_score(lead)
+            scored += 1
+            if not is_high_intent(lead.conversion_score):
+                continue
+            if lead.status not in {"uncontacted", "in_sequence"}:
+                continue
+            if lead.status == "uncontacted":
+                result = await push_to_instantly(
+                    lead.id,
+                    campaign,
+                    session=session,
+                    client=client,
+                )
+                if result.get("ok"):
+                    dispatched += 1
+                    lead.status = "in_sequence"
+                elif result.get("dead_letter"):
+                    dead_letters += 1
+        if owns_session:
+            session.commit()
+        else:
+            session.flush()
+        return {
+            "ok": bool(fetched.get("ok")),
+            "fetched": fetched,
+            "scored": scored,
+            "dispatched": dispatched,
+            "dead_letters": dead_letters,
+        }
+    finally:
+        if owns_session:
+            session.close()

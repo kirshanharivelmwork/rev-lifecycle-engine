@@ -21,6 +21,8 @@ from src.models_db import (
     IngestionJob,
     InterventionOutcome,
     Organization,
+    OutboundCampaign,
+    ProspectLead,
     SystemAuditLog,
     TelemetryEvent,
     utcnow,
@@ -49,6 +51,8 @@ def _wipe_org(session, org_id: str) -> None:
     session.query(DispatchedAction).filter(DispatchedAction.org_id == org_id).delete()
     session.query(ChurnAssessment).filter(ChurnAssessment.org_id == org_id).delete()
     session.query(TelemetryEvent).filter(TelemetryEvent.org_id == org_id).delete()
+    session.query(OutboundCampaign).filter(OutboundCampaign.org_id == org_id).delete()
+    session.query(ProspectLead).filter(ProspectLead.org_id == org_id).delete()
     session.query(CustomerAccount).filter(CustomerAccount.org_id == org_id).delete()
     session.query(Organization).filter(Organization.org_id == org_id).delete()
 
@@ -233,6 +237,62 @@ def _seed_globex(session, org: Organization) -> None:
         )
 
 
+def _seed_prospects(session, org: Organization) -> None:
+    from src.conversion_model import score_intent_signals
+
+    now = utcnow()
+    high_signals = [
+        "recently raised funding",
+        "hiring VP of Sales",
+        "hiring CRO",
+        "expanding sales team",
+        "tech stack: HubSpot",
+        "tech stack: Salesforce",
+        "intent: churn",
+        "visited pricing",
+        "series a",
+    ]
+    rows = [
+        ("Northwind Analytics", "Priya Shah", "priya.shah@northwind-analytics.example", high_signals, "uncontacted"),
+        ("Helios RevOps", "Marcus Bell", "marcus.bell@helios-revops.example", high_signals, "in_sequence"),
+        ("Pinnacle Labs", "Elena Ruiz", "elena.ruiz@pinnacle-labs.example", ["job change"], "uncontacted"),
+        ("Harbor CRM", "Jonah Cole", "jonah.cole@harbor-crm.example", ["hiring RevOps", "visited pricing"], "meeting_booked"),
+    ]
+    for company, name, email, signals, status in rows:
+        session.add(
+            ProspectLead(
+                org_id=org.org_id,
+                company_name=company,
+                decision_maker_name=name,
+                email=email,
+                linkedin_url=f"https://linkedin.com/in/{name.lower().replace(' ', '-')}",
+                intent_signals=signals,
+                conversion_score=score_intent_signals(signals),
+                status=status,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    session.flush()
+    high = (
+        session.query(ProspectLead)
+        .filter(ProspectLead.org_id == org.org_id, ProspectLead.email == "marcus.bell@helios-revops.example")
+        .one()
+    )
+    session.add(
+        OutboundCampaign(
+            org_id=org.org_id,
+            prospect_lead_id=high.id,
+            vendor="instantly",
+            campaign_id="camp_demo_outbound",
+            vendor_lead_id="inst_demo_1",
+            status="synced",
+            created_at=now,
+            last_synced_at=now,
+        )
+    )
+
+
 def seed_commercial_demo() -> dict[str, str]:
     reset_engine()
     init_db()
@@ -242,6 +302,7 @@ def seed_commercial_demo() -> dict[str, str]:
         globex = seed_organization(session, GLOBEX_ORG_ID, GLOBEX_NAME, GLOBEX_API_KEY, "growth")
         _seed_acme_accounts(session, acme)
         _seed_globex(session, globex)
+        _seed_prospects(session, acme)
         session.commit()
         LOGGER.info("Seeded %s (%s accounts) and %s", ACME_NAME, 50, GLOBEX_NAME)
         return {

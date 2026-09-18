@@ -17,6 +17,8 @@ from src.models_db import (
     CustomerAccount,
     DispatchedAction,
     Organization,
+    OutboundCampaign,
+    ProspectLead,
     SystemAuditLog,
     TelemetryEvent,
 )
@@ -29,6 +31,8 @@ RLS_TABLES = (
     "churn_assessments",
     "dispatched_actions",
     "system_audit_logs",
+    "prospect_leads",
+    "outbound_campaigns",
 )
 RLS_MODELS = (
     CustomerAccount,
@@ -36,6 +40,8 @@ RLS_MODELS = (
     ChurnAssessment,
     DispatchedAction,
     SystemAuditLog,
+    ProspectLead,
+    OutboundCampaign,
 )
 _ORM_RLS_REGISTERED = False
 
