@@ -39,6 +39,9 @@ class Organization(Base):
     alert_cooldown_days: Mapped[int] = mapped_column(Integer, default=DEFAULT_COOLDOWN_DAYS, nullable=False)
     hitl_mrr_threshold: Mapped[float] = mapped_column(Float, default=1000.0, nullable=False)
     subscription_status: Mapped[str] = mapped_column(String(24), default="active", nullable=False)
+    hubspot_access_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    salesforce_access_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    salesforce_instance_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     accounts: Mapped[list["CustomerAccount"]] = relationship(back_populates="organization")
 
@@ -64,6 +67,7 @@ class CustomerAccount(Base):
     suppressed_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     contract_renewal_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     approval_status: Mapped[str] = mapped_column(String(32), default="none", nullable=False)
+    crm_account_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
     organization: Mapped[Organization] = relationship(back_populates="accounts")
     telemetry: Mapped[list["TelemetryEvent"]] = relationship(back_populates="account")

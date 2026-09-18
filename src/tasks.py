@@ -45,6 +45,9 @@ def process_ingestion_job(job_id: str, max_attempts: int = MAX_ATTEMPTS) -> dict
             org = session.get(Organization, job.org_id)
             if org is None:
                 raise RuntimeError("organization missing for ingestion job")
+            from src.rls import set_tenant_context
+
+            set_tenant_context(session, org.org_id)
             payload = job.payload or {}
             source = job.source
             if source == "stripe":

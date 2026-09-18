@@ -40,6 +40,9 @@ def update_tenant_policy(
     stripe_webhook_secret: Optional[str] = None,
     slack_webhook_url: Optional[str] = None,
     resend_api_key: Optional[str] = None,
+    hubspot_access_token: Optional[str] = None,
+    salesforce_access_token: Optional[str] = None,
+    salesforce_instance_url: Optional[str] = None,
 ) -> Organization:
     old = {
         "alert_cooldown_days": org.alert_cooldown_days,
@@ -55,6 +58,12 @@ def update_tenant_policy(
         org.slack_webhook_url = slack_webhook_url
     if resend_api_key:
         org.resend_api_key = resend_api_key
+    if hubspot_access_token:
+        org.hubspot_access_token = hubspot_access_token
+    if salesforce_access_token:
+        org.salesforce_access_token = salesforce_access_token
+    if salesforce_instance_url:
+        org.salesforce_instance_url = salesforce_instance_url.rstrip("/")
     new = {
         "alert_cooldown_days": org.alert_cooldown_days,
         "hitl_mrr_threshold": org.hitl_mrr_threshold,

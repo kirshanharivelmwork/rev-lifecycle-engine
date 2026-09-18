@@ -321,6 +321,10 @@ def main() -> None:
                 configured.append("Slack webhook")
             if org.resend_api_key:
                 configured.append("Resend API key")
+            if org.hubspot_access_token:
+                configured.append("HubSpot")
+            if org.salesforce_access_token:
+                configured.append("Salesforce")
             if configured:
                 st.success("Configured: " + " · ".join(configured))
             else:
@@ -343,6 +347,23 @@ def main() -> None:
                 value="",
                 type="password",
                 help="re_… key used for retention emails. Blank keeps the stored key.",
+            )
+            hubspot_token = st.text_input(
+                "HubSpot access token",
+                value="",
+                type="password",
+                help="Private app token. Blank keeps the stored token.",
+            )
+            salesforce_token = st.text_input(
+                "Salesforce access token",
+                value="",
+                type="password",
+                help="OAuth access token. Blank keeps the stored token.",
+            )
+            salesforce_instance = st.text_input(
+                "Salesforce instance URL",
+                value=org.salesforce_instance_url or "",
+                help="e.g. https://yourorg.my.salesforce.com",
             )
             cooldown_days = st.slider(
                 "Automated alert cooldown (days)",
@@ -369,6 +390,9 @@ def main() -> None:
                     stripe_webhook_secret=stripe_secret.strip() or None,
                     slack_webhook_url=slack_url.strip() or None,
                     resend_api_key=resend_key.strip() or None,
+                    hubspot_access_token=hubspot_token.strip() or None,
+                    salesforce_access_token=salesforce_token.strip() or None,
+                    salesforce_instance_url=salesforce_instance.strip() or None,
                 )
                 session.query(CustomerAccount).filter(CustomerAccount.org_id == org.org_id).update(
                     {CustomerAccount.cooldown_days: int(cooldown_days)}

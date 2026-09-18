@@ -24,6 +24,7 @@ from src.models_db import (
 from src.outcome_tracker import record_intervention_outcome
 from src.paths import (
     AT_RISK_THRESHOLD,
+    CRITICAL_THRESHOLD,
     DEFAULT_COOLDOWN_DAYS,
     ESCALATION_PROBABILITY,
     HITL_MRR_THRESHOLD,
@@ -246,6 +247,7 @@ def _fire_channels(
     slack_url: Optional[str],
     resend_api_key: Optional[str] = None,
     cooldown_days: Optional[int] = None,
+    org: Optional[Organization] = None,
 ) -> list[DispatchedAction]:
     actions: list[DispatchedAction] = []
     slack_payload = _slack_blocks(account, scored)
@@ -277,6 +279,13 @@ def _fire_channels(
     account.suppressed_until = now + timedelta(days=window)
     if account.approval_status == "pending":
         account.approval_status = "approved"
+    if org and (
+        scored["probability"] >= CRITICAL_THRESHOLD or scored["assessment"].risk_tier == "Critical"
+    ):
+        if org.hubspot_access_token or org.salesforce_access_token:
+            from src.integrations.crm import enqueue_crm_sync
+
+            enqueue_crm_sync(org, account, scored["probability"])
     return actions
 
 
@@ -342,6 +351,7 @@ def evaluate_and_trigger_actions(
                     slack_url=slack_url,
                     resend_api_key=resend_key,
                     cooldown_days=cooldown_days,
+                    org=org,
                 )
             )
             result_status = "dispatched"
@@ -401,6 +411,7 @@ def approve_pending_dispatch(
             slack_url=(org.slack_webhook_url if org else None) or os.getenv("SLACK_WEBHOOK_URL"),
             resend_api_key=(org.resend_api_key if org else None) or os.getenv("RESEND_API_KEY"),
             cooldown_days=_org_cooldown_days(org, account),
+            org=org,
         )
         from src.audit import record_audit
 
