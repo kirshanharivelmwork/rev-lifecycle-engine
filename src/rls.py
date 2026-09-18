@@ -82,6 +82,8 @@ def register_pool_rls_reset(engine: Engine) -> None:
 
 
 def reset_rls_on_dbapi(dbapi_connection, dialect_name: str) -> None:
+    if dbapi_connection is None:
+        return
     if dialect_name != "postgresql":
         return
     cursor = dbapi_connection.cursor()

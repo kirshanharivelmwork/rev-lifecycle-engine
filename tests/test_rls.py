@@ -76,6 +76,7 @@ def test_pool_checkin_reset_helper_is_noop_on_sqlite(tmp_path, monkeypatch) -> N
         def cursor(self):
             return _Cursor()
 
+    reset_rls_on_dbapi(None, "postgresql")
     reset_rls_on_dbapi(_Conn(), "sqlite")
     # postgres path swallows missing GUC rather than raising
     class _PgCursor:
