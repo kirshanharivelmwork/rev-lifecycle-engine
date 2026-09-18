@@ -39,6 +39,7 @@ class Organization(Base):
     alert_cooldown_days: Mapped[int] = mapped_column(Integer, default=DEFAULT_COOLDOWN_DAYS, nullable=False)
     hitl_mrr_threshold: Mapped[float] = mapped_column(Float, default=1000.0, nullable=False)
     subscription_status: Mapped[str] = mapped_column(String(24), default="active", nullable=False)
+    stripe_customer_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     hubspot_access_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     salesforce_access_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     salesforce_instance_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

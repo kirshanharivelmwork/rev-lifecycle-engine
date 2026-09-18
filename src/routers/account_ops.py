@@ -70,13 +70,56 @@ def mrr_from_subscription(obj: dict[str, Any]) -> tuple[float, str]:
     return round(mrr, 2), contract
 
 
-def apply_stripe_event(db: Session, org: Organization, payload: dict[str, Any]) -> CustomerAccount:
+def apply_org_billing_from_stripe(
+    db: Session,
+    payload: dict[str, Any],
+    org: Optional[Organization] = None,
+) -> Optional[Organization]:
+    """Map checkout / invoice events onto Organization.subscription_status."""
     event_type = payload.get("type") or payload.get("event")
+    obj = (payload.get("data") or {}).get("object") or payload.get("object") or {}
+    customer = obj.get("customer") or obj.get("customer_id")
+    if isinstance(customer, dict):
+        customer = customer.get("id")
+    customer_id = str(customer) if customer else None
+    target = org
+    if target is None and customer_id:
+        target = (
+            db.query(Organization)
+            .filter(Organization.stripe_customer_id == customer_id)
+            .one_or_none()
+        )
+    if target is None:
+        return None
+    if event_type == "checkout.session.completed":
+        target.subscription_status = "active"
+        if customer_id:
+            target.stripe_customer_id = customer_id
+        db.flush()
+        return target
+    if event_type == "invoice.payment_failed":
+        if customer_id and target.stripe_customer_id and customer_id != target.stripe_customer_id:
+            return target
+        if customer_id and not target.stripe_customer_id:
+            # Only flip the tenant bill when this Stripe customer is the org's billing ID.
+            return target
+        if customer_id == target.stripe_customer_id:
+            target.subscription_status = "past_due"
+            db.flush()
+        return target
+    return target
+
+
+def apply_stripe_event(db: Session, org: Organization, payload: dict[str, Any]) -> Optional[CustomerAccount]:
+    event_type = payload.get("type") or payload.get("event")
+    apply_org_billing_from_stripe(db, payload, org)
     obj = (payload.get("data") or {}).get("object") or payload.get("object") or {}
     metadata = obj.get("metadata") or payload.get("metadata") or {}
     customer_id = obj.get("customer") or obj.get("id")
     if event_type == "customer.created":
         customer_id = obj.get("id")
+    if event_type == "checkout.session.completed":
+        return None
     if not customer_id:
         raise ValueError("Stripe object missing customer id")
 

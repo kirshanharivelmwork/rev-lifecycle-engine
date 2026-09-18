@@ -52,12 +52,13 @@ def process_ingestion_job(job_id: str, max_attempts: int = MAX_ATTEMPTS) -> dict
             source = job.source
             if source == "stripe":
                 account = apply_stripe_event(session, org, payload)
-                if payload.get("type") in {
+                if account is not None and payload.get("type") in {
                     "invoice.payment_failed",
                     "customer.subscription.updated",
                     "customer.subscription.created",
                 }:
-                    evaluate_and_trigger_actions(account.id, org.org_id, session=session)
+                    if not org.stripe_customer_id or account.customer_external_id != org.stripe_customer_id:
+                        evaluate_and_trigger_actions(account.id, org.org_id, session=session)
             elif source == "telemetry":
                 persist_telemetry_items(session, org, payload)
             else:

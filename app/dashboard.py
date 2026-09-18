@@ -28,7 +28,7 @@ from src.models_db import (
     utcnow,
 )
 from src.outcome_tracker import audit_intervention_outcomes
-from src.paths import AT_RISK_THRESHOLD, HITL_MRR_THRESHOLD, INTERVENTION_SUCCESS_RATE, MODEL_VERSION
+from src.paths import AT_RISK_THRESHOLD, HITL_MRR_THRESHOLD, INTERVENTION_SUCCESS_RATE, MODEL_VERSION, ASSUMED_MEETING_ACV
 from src.seed_commercial_demo import seed_commercial_demo
 
 st.set_page_config(
@@ -294,10 +294,19 @@ def main() -> None:
                 .filter(OutboundCampaign.org_id == org.org_id)
                 .count()
             )
+            meetings_booked = sum(1 for p in prospects if p.status == "meeting_booked")
+            pipeline_generated = meetings_booked * float(ASSUMED_MEETING_ACV)
             a1, a2, a3 = st.columns(3)
             a1.metric("New Leads Sourced", f"{len(sourced_today):,}", f"{len(prospects):,} in book")
             a2.metric("High-Intent Prospects", f"{len(high_intent):,}", "score > 80")
             a3.metric("Cold Emails Dispatched", f"{int(dispatched_emails):,}")
+            r1, r2 = st.columns(2)
+            r1.metric("Meetings Booked", f"{meetings_booked:,}", "status = meeting_booked")
+            r2.metric(
+                "Estimated Pipeline Generated",
+                _fmt_money(pipeline_generated),
+                f"${int(ASSUMED_MEETING_ACV):,} assumed ACV",
+            )
             ranked = sourced_today or prospects
             table_rows = []
             for lead in ranked[:40]:

@@ -36,7 +36,7 @@ from src.paths import (
     MODEL_VERSION,
     PROCESSED_DIR,
 )
-from src.routers import customers, ingestion
+from src.routers import customers, ingestion, webhooks
 from src.scoring import assign_risk_tier, recommend_playbook, risk_drivers
 
 LOGGER = logging.getLogger(__name__)
@@ -137,6 +137,7 @@ async def _rate_limited(_request: Request, _exc: RateLimitExceeded):
 
 
 app.include_router(ingestion.router, prefix="/api/v1")
+app.include_router(webhooks.router, prefix="/api/v1")
 app.include_router(customers.router, prefix="/api/v1")
 
 

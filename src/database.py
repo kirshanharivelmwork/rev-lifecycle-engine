@@ -106,6 +106,7 @@ def migrate_schema(engine: Engine) -> None:
     _ensure_column(engine, "organizations", "alert_cooldown_days", "alert_cooldown_days INTEGER DEFAULT 14")
     _ensure_column(engine, "organizations", "hitl_mrr_threshold", "hitl_mrr_threshold FLOAT DEFAULT 1000")
     _ensure_column(engine, "organizations", "subscription_status", "subscription_status VARCHAR(24) DEFAULT 'active'")
+    _ensure_column(engine, "organizations", "stripe_customer_id", "stripe_customer_id VARCHAR(64)")
     _ensure_column(engine, "organizations", "hubspot_access_token", "hubspot_access_token TEXT")
     _ensure_column(engine, "organizations", "salesforce_access_token", "salesforce_access_token TEXT")
     _ensure_column(engine, "organizations", "salesforce_instance_url", "salesforce_instance_url TEXT")

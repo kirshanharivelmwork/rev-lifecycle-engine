@@ -67,20 +67,29 @@ def _resolve_org(
     x_api_key: Optional[str],
     metadata: Optional[dict] = None,
     write_key: Optional[str] = None,
+    *,
+    enforce_billing: bool = True,
+    stripe_customer_id: Optional[str] = None,
 ) -> Organization:
     org_id = x_org_id or (metadata or {}).get("org_id")
+    org: Optional[Organization] = None
     if org_id:
         org = db.query(Organization).filter(Organization.org_id == org_id).one_or_none()
-        if org:
-            raise_if_inactive(org)
-            return org
-    key = x_api_key or write_key
-    if key:
-        org = db.query(Organization).filter(Organization.api_key == hash_api_key(key)).one_or_none()
-        if org:
-            raise_if_inactive(org)
-            return org
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unable to resolve organization")
+    if org is None:
+        key = x_api_key or write_key
+        if key:
+            org = db.query(Organization).filter(Organization.api_key == hash_api_key(key)).one_or_none()
+    if org is None and stripe_customer_id:
+        org = (
+            db.query(Organization)
+            .filter(Organization.stripe_customer_id == str(stripe_customer_id))
+            .one_or_none()
+        )
+    if org is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unable to resolve organization")
+    if enforce_billing:
+        raise_if_inactive(org)
+    return org
 
 
 def extract_event_id(payload: dict[str, Any], source: str) -> str:
@@ -89,6 +98,16 @@ def extract_event_id(payload: dict[str, Any], source: str) -> str:
         return str(explicit)[:128]
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
     return f"{source}_{digest[:40]}"
+
+
+def _stripe_customer_hint(payload: dict[str, Any]) -> Optional[str]:
+    obj = (payload.get("data") or {}).get("object") or payload.get("object") or {}
+    customer = obj.get("customer") or obj.get("customer_id")
+    if isinstance(customer, dict):
+        customer = customer.get("id")
+    if customer:
+        return str(customer)
+    return None
 
 
 def claim_idempotent_event(db: Session, org_id: str, event_id: str, source: str) -> bool:
@@ -135,49 +154,6 @@ def _enqueue_job(
     db.refresh(job)
     background.add_task(process_ingestion_job, job.id)
     return job
-
-
-@router.post("/webhooks/stripe")
-@limiter.limit(INGEST_LIMIT)
-async def stripe_webhook(
-    request: Request,
-    background: BackgroundTasks,
-    db: Session = Depends(get_db),
-    x_org_id: Optional[str] = Header(default=None, alias="X-Org-Id"),
-    x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
-    stripe_signature: Optional[str] = Header(default=None, alias="Stripe-Signature"),
-) -> Any:
-    """Accept a Stripe event, verify signature, persist, and process asynchronously."""
-    raw = await request.body()
-    metadata_hint = {}
-    try:
-        preview = json.loads(raw.decode("utf-8"))
-        obj = (preview.get("data") or {}).get("object") or {}
-        metadata_hint = obj.get("metadata") or preview.get("metadata") or {}
-    except json.JSONDecodeError:
-        preview = {}
-    org = _resolve_org(db, x_org_id, x_api_key, metadata=metadata_hint)
-    secret = org.stripe_webhook_secret or os.getenv("STRIPE_WEBHOOK_SECRET")
-    event = verify_stripe_signature(raw, stripe_signature, secret)
-    event_id = extract_event_id(event, "stripe")
-    if not claim_idempotent_event(db, org.org_id, event_id, "stripe"):
-        return JSONResponse(
-            status_code=200,
-            content={"status": "skipped", "reason": "duplicate", "event_id": event_id, "org_id": org.org_id},
-        )
-    job = _enqueue_job(db, org, "stripe", event, background)
-    return JSONResponse(
-        status_code=202,
-        content={
-            "ok": True,
-            "accepted": True,
-            "job_id": job.id,
-            "status": "queued",
-            "org_id": org.org_id,
-            "event_type": event.get("type"),
-            "event_id": event_id,
-        },
-    )
 
 
 class TelemetryItem(BaseModel):
