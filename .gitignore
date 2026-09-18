@@ -27,3 +27,5 @@ data/raw/*.csv
 data/processed/*.csv
 data/processed/*.json
 models/*.pkl
+data/*.db
+*.db

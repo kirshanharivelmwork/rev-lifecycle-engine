@@ -1,4 +1,4 @@
-"""Production FastAPI scoring service and webhook alert dispatcher."""
+"""Production FastAPI scoring service, webhooks, and webhook alert dispatcher."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import sys
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -18,7 +19,10 @@ import requests
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from src.auth import get_current_org
 from src.churn_model import ChurnScoringEngine, load_or_train
+from src.database import init_db
+from src.models_db import Organization
 from src.paths import (
     ACQUISITION_CHANNELS,
     AT_RISK_THRESHOLD,
@@ -28,6 +32,7 @@ from src.paths import (
     MODEL_VERSION,
     PROCESSED_DIR,
 )
+from src.routers import ingestion
 from src.scoring import assign_risk_tier, recommend_playbook, risk_drivers
 
 LOGGER = logging.getLogger(__name__)
@@ -75,6 +80,7 @@ class PredictionResponse(BaseModel):
     recommended_playbook: str
     risk_drivers: str
     model_version: str
+    org_id: Optional[str] = None
 
 
 class DispatchRequest(CustomerTelemetry):
@@ -100,14 +106,28 @@ def get_engine() -> ChurnScoringEngine:
     return _ENGINE
 
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    init_db()
+    yield
+
+
 app = FastAPI(
     title="Rev Lifecycle Engine API",
-    description="Churn scoring and critical-risk webhook dispatch for B2B SaaS.",
+    description="Multi-tenant B2B revenue intelligence: live ingestion, scoring, and automated save motions.",
     version=MODEL_VERSION,
+    lifespan=lifespan,
 )
 
 
-def score_payload(payload: CustomerTelemetry, engine: ChurnScoringEngine) -> PredictionResponse:
+app.include_router(ingestion.router, prefix="/api/v1")
+
+
+def score_payload(
+    payload: CustomerTelemetry,
+    engine: ChurnScoringEngine,
+    org: Organization | None = None,
+) -> PredictionResponse:
     data = payload.model_dump()
     data.pop("webhook_url", None)
     data.pop("force", None)
@@ -123,6 +143,7 @@ def score_payload(payload: CustomerTelemetry, engine: ChurnScoringEngine) -> Pre
         recommended_playbook=recommend_playbook(row),
         risk_drivers=risk_drivers(row),
         model_version=MODEL_VERSION,
+        org_id=org.org_id if org else None,
     )
 
 
@@ -184,16 +205,18 @@ def health(engine: ChurnScoringEngine = Depends(get_engine)) -> dict[str, Any]:
         "model_name": engine.production_name_,
         "at_risk_threshold": AT_RISK_THRESHOLD,
         "critical_threshold": CRITICAL_THRESHOLD,
+        "auth": "X-API-Key required on non-webhook routes",
     }
 
 
 @app.post("/v1/predict", response_model=PredictionResponse)
 def predict(
     payload: CustomerTelemetry,
+    org: Organization = Depends(get_current_org),
     engine: ChurnScoringEngine = Depends(get_engine),
 ) -> PredictionResponse:
     try:
-        return score_payload(payload, engine)
+        return score_payload(payload, engine, org=org)
     except Exception as exc:  # pragma: no cover - defensive
         LOGGER.exception("Prediction failed")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -202,9 +225,10 @@ def predict(
 @app.post("/v1/dispatch-alert", response_model=DispatchResponse)
 def dispatch_alert(
     payload: DispatchRequest,
+    org: Organization = Depends(get_current_org),
     engine: ChurnScoringEngine = Depends(get_engine),
 ) -> DispatchResponse:
-    prediction = score_payload(payload, engine)
+    prediction = score_payload(payload, engine, org=org)
     webhook_url = payload.webhook_url or os.getenv("WEBHOOK_URL")
     body = _webhook_body(prediction, payload)
 
@@ -213,6 +237,7 @@ def dispatch_alert(
             "dispatched_at": datetime.now(timezone.utc).isoformat(),
             "status": "skipped",
             "reason": f"probability {prediction.churn_probability:.4f} <= {CRITICAL_THRESHOLD}",
+            "org_id": org.org_id,
             "prediction": prediction.model_dump(),
             "webhook_payload": body,
         }
@@ -226,29 +251,30 @@ def dispatch_alert(
         )
 
     http_status: int | None = None
-    status = "simulated"
+    dispatch_status = "simulated"
     reason = "Webhook simulated (no WEBHOOK_URL). Payload persisted to dispatched_alerts_log.json."
     if webhook_url:
         try:
             response = requests.post(webhook_url, json=body, timeout=8)
             http_status = int(response.status_code)
-            status = "sent" if response.ok else "failed"
-            reason = f"Webhook {status} with HTTP {http_status}"
+            dispatch_status = "sent" if response.ok else "failed"
+            reason = f"Webhook {dispatch_status} with HTTP {http_status}"
         except requests.RequestException as exc:
-            status = "failed"
+            dispatch_status = "failed"
             reason = f"Webhook transport error: {exc}"
 
     record = {
         "dispatched_at": datetime.now(timezone.utc).isoformat(),
-        "status": status,
+        "status": dispatch_status,
         "reason": reason,
         "http_status": http_status,
+        "org_id": org.org_id,
         "prediction": prediction.model_dump(),
         "webhook_payload": body,
     }
     _append_dispatch_log(record)
     return DispatchResponse(
-        dispatched=status in {"sent", "simulated"},
+        dispatched=dispatch_status in {"sent", "simulated"},
         reason=reason,
         http_status=http_status,
         log_path=str(DISPATCH_LOG_PATH),

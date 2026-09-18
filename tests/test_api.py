@@ -8,7 +8,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.api import app, get_engine
+from src.auth import get_current_org
 from src.churn_model import ChurnScoringEngine
+from src.models_db import Organization
 from src.paths import CRITICAL_THRESHOLD, MODEL_VERSION
 
 HIGH_RISK = {
@@ -42,7 +44,9 @@ HEALTHY = {
 def client(processed_frame):
     engine = ChurnScoringEngine()
     engine.fit(processed_frame, tune=False)
+    demo_org = Organization(org_id="org_test", name="Test", api_key="hashed", plan_tier="dev")
     app.dependency_overrides[get_engine] = lambda: engine
+    app.dependency_overrides[get_current_org] = lambda: demo_org
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()

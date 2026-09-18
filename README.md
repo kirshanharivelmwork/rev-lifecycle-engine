@@ -191,7 +191,8 @@ python3 -m src.churn_model
 # 5. Full run
 python3 -m src
 
-# 6. Unit tests
+# 6. Seed commercial tenants + unit tests
+python3 -m src.seed_commercial_demo
 python3 -m pytest
 ```
 
@@ -205,30 +206,106 @@ Open `notebooks/saas_retention_deepdive.ipynb` for Front Door vs. Back Door EDA,
 
 ---
 
+## Commercial Platform (Multi-Tenant)
+
+Rev Lifecycle Engine is a **B2B revenue intelligence product**: each customer is an `Organization` with hashed `X-API-Key` credentials, isolated accounts, live Stripe/Segment ingestion, calibrated churn scoring, and automated Slack + Resend save motions.
+
+```mermaid
+flowchart LR
+    Stripe[Stripe webhooks] --> API
+    Segment[Telemetry webhooks] --> API
+    API[FastAPI multi-tenant API]
+    API --> DB[(PostgreSQL / SQLite)]
+    API --> ML[Persisted churn model]
+    ML --> DISP[Action dispatcher]
+    DISP --> Slack
+    DISP --> Resend
+    DISP --> DB
+    DB --> UI[Executive ROI dashboard]
+```
+
+| Pillar | Module | What it does |
+| --- | --- | --- |
+| Multi-tenant schema | `src/models_db.py`, `src/database.py` | Org, CustomerAccount, TelemetryEvent, ChurnAssessment, DispatchedAction |
+| Live ingestion | `src/routers/ingestion.py` | `POST /api/v1/webhooks/stripe`, `POST /api/v1/webhooks/telemetry` |
+| Action engine | `src/dispatcher.py` | Score account; if p ≥ 0.65 send Slack Block Kit + Resend email (or simulate) |
+| ROI dashboard | `app/dashboard.py` | Org switcher, ARR protected, intervention count, live action stream, ROI calculator |
+
+Default local DB is SQLite (`data/rev_lifecycle.db`) with `PRAGMA foreign_keys=ON`. Production: set `DATABASE_URL=postgresql+psycopg2://user:pass@host:5432/revlifecycle`.
+
+### Seed a demo tenant
+
+```bash
+python3 -m src.seed_commercial_demo
+```
+
+Prints API keys for **Acme SaaS** (`org_acme`, 50 accounts) and **Globex Analytics** (`org_globex`).
+
+### Commercial API
+
+Non-webhook routes require `X-API-Key`. Webhooks resolve the tenant via `X-Org-Id`, `X-API-Key`, Segment `writeKey`, or Stripe `metadata.org_id`.
+
+```bash
+# Health (public)
+curl -s http://127.0.0.1:8000/health
+
+# Authenticated scoring
+curl -s -X POST http://127.0.0.1:8000/v1/predict \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: rle_acme_live_demo_key" \
+  -d '{"customer_id":"cus_acme_000","acquisition_channel":"Paid Search","contract_type":"Monthly","avg_weekly_logins":1.0,"feature_adoption_score":2.2,"support_tickets_raised":4,"days_since_last_login":30,"monthly_recurring_revenue":640}'
+
+# Stripe customer upsert
+curl -s -X POST http://127.0.0.1:8000/api/v1/webhooks/stripe \
+  -H "Content-Type: application/json" \
+  -H "X-Org-Id: org_acme" \
+  -d '{"type":"customer.created","data":{"object":{"id":"cus_123","metadata":{"channel":"Paid Search","mrr":199}}}}'
+
+# Product telemetry (Segment/PostHog batch)
+curl -s -X POST http://127.0.0.1:8000/api/v1/webhooks/telemetry \
+  -H "Content-Type: application/json" \
+  -H "X-Org-Id: org_acme" \
+  -d '{"batch":[{"userId":"cus_123","event":"login","properties":{"source":"web"}}]}'
+```
+
+Automated actions fire when `churn_probability >= 0.65`:
+
+- **Slack** — Block Kit alert with MRR, days inactive, score, and a “Trigger Retainer Playbook” button. Posts to `SLACK_WEBHOOK_URL` or stores `status=simulated`.
+- **Resend** — Personalized re-engagement email via `https://api.resend.com/emails` when `RESEND_API_KEY` is set.
+- Both rows land in `dispatched_actions` for tenant audit.
+
+```bash
+uvicorn src.api:app --reload --port 8000
+python3 -m src.seed_commercial_demo
+streamlit run app/dashboard.py
+```
+
+Dashboard: organization switcher, monitored ARR, ARR protected (at-risk ARR × 35% save rate), this-month intervention count, live action stream, and an interactive ROI calculator (subscription price × CS save rate).
+
+---
+
 ## Enterprise Architecture & Deployment
 
-The batch science stack (generate → pipeline → stats → model) is now wrapped by two operational surfaces that share the same persisted scorer (`models/churn_engine.pkl`, version `1.0.0`):
+The original batch science stack (generate → pipeline → stats → model) remains available. Online scoring still uses `models/churn_engine.pkl` (version `1.0.0`).
 
 | Surface | Role | Process |
 | --- | --- | --- |
-| **Executive UI** | Revenue / CS command center | Streamlit on port 8501 |
-| **Scoring API** | Real-time predict + critical webhook dispatch | Uvicorn / FastAPI on port 8000 |
+| **Executive UI** | Multi-tenant ROI command center | Streamlit on port 8501 |
+| **Scoring + ingestion API** | Predict, Stripe/telemetry webhooks, dispatcher | Uvicorn / FastAPI on port 8000 |
 
 ```mermaid
 flowchart TB
     subgraph ops [Online path]
       UI[Streamlit dashboard]
       API[FastAPI /v1/predict]
-      WH[Webhook dispatcher]
+      WH[Stripe + telemetry webhooks]
     end
     PKL[models/churn_engine.pkl]
-    FEAT[full_funnel_features.csv]
-    UI --> PKL
-    UI --> FEAT
+    DB[(Tenant database)]
+    UI --> DB
     API --> PKL
-    API --> WH
-    WH --> LOG[dispatched_alerts_log.json]
-    WH --> SLACK[Slack / Discord / CRM webhook]
+    WH --> DB
+    API --> DB
 ```
 
 ### Launch the dashboard
@@ -338,6 +415,9 @@ macOS note: XGBoost wheels need OpenMP (`brew install libomp`). The scorer falls
 | `test_model_inference` | New rows score to probabilities ∈ [0.0, 1.0] |
 | `test_health_ok` | `GET /health` returns HTTP 200 with status and model version |
 | `test_predict_returns_valid_payload` | `POST /v1/predict` returns HTTP 200, probability ∈ [0, 1], playbook, ARR at risk |
+| `test_multi_tenant_isolation` | Org A queries cannot see Org B `CustomerAccount` rows |
+| `test_stripe_webhook_ingests_customer_and_subscription` | Stripe `customer.created` + `subscription.updated` upsert MRR |
+| `test_action_dispatching_on_high_churn_accounts` | p ≥ 0.65 writes Slack + Resend `DispatchedAction` rows |
 
 ---
 
