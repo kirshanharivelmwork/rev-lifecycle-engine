@@ -11,7 +11,7 @@ import httpx
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from src.conversion_model import HIGH_INTENT_THRESHOLD, score_intent_signals
+from src.conversion_model import score_intent_signals
 from src.dead_letter import record_dead_letter
 from src.models_db import Organization, OutboundCampaign, ProspectLead, utcnow
 
@@ -19,6 +19,11 @@ LOGGER = logging.getLogger(__name__)
 APOLLO_SEARCH_URL = "https://api.apollo.io/api/v1/mixed_people/search"
 INSTANTLY_LEADS_URL = "https://api.instantly.ai/api/v2/leads"
 MAX_PUSH_ATTEMPTS = 3
+ICEBREAKER_PROMPT = (
+    "Write a casual, highly personalized 12-to-15 word opening sentence for a B2B cold email "
+    "based on this company news/intent signal: {intent_signals}. Do not use greetings or sign-offs. "
+    "Sound like a peer."
+)
 
 
 def _apollo_headers(api_key: str) -> dict[str, str]:
@@ -114,6 +119,43 @@ def upsert_prospect(session: Session, org_id: str, fields: dict[str, Any]) -> Op
     return lead
 
 
+async def generate_icebreaker(
+    company_name: str,
+    intent_signals: Any,
+    *,
+    client: Any = None,
+) -> Optional[str]:
+    """Ask OpenAI for a 12–15 word Instantly icebreaker. No-ops without OPENAI_API_KEY."""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key and client is None:
+        return None
+    blob = intent_signals
+    if not isinstance(blob, str):
+        blob = ", ".join(str(x) for x in (blob or []) if str(x).strip()) or "none"
+    if company_name:
+        blob = f"{company_name} — {blob}"
+    prompt = ICEBREAKER_PROMPT.format(intent_signals=blob)
+    try:
+        if client is None:
+            from openai import AsyncOpenAI
+
+            client = AsyncOpenAI(api_key=api_key)
+        response = await client.chat.completions.create(
+            model=os.getenv("OPENAI_ICEBREAKER_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": "You write B2B cold email openers. No greetings or sign-offs."},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=60,
+            temperature=0.7,
+        )
+        text = (response.choices[0].message.content or "").strip().strip('"')
+        return text or None
+    except Exception as exc:
+        LOGGER.warning("Icebreaker generation failed: %s", exc)
+        return None
+
+
 async def fetch_apollo_leads(
     org_id: str,
     search_params: Optional[dict[str, Any]] = None,
@@ -205,12 +247,15 @@ async def push_to_instantly(
         if org is None or not org.instantly_api_key:
             return {"ok": False, "error": "missing_instantly_api_key"}
         campaign_id = campaign_id or os.getenv("INSTANTLY_CAMPAIGN_ID") or "default"
+        icebreaker = await generate_icebreaker(lead.company_name, lead.intent_signals)
         payload = {
             "lead_id": lead.id,
             "campaign_id": campaign_id,
             "email": lead.email,
             "company_name": lead.company_name,
         }
+        if icebreaker:
+            payload["custom_icebreaker"] = icebreaker
         body = {
             "campaign": campaign_id,
             "email": lead.email,
@@ -219,6 +264,9 @@ async def push_to_instantly(
             "company_name": lead.company_name,
             "linkedin": lead.linkedin_url,
         }
+        if icebreaker:
+            body["custom_icebreaker"] = icebreaker
+            body["custom_variables"] = {"custom_icebreaker": icebreaker}
         headers = {
             "Authorization": f"Bearer {org.instantly_api_key}",
             "Content-Type": "application/json",

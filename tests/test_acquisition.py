@@ -6,7 +6,12 @@ import asyncio
 
 from src.conversion_model import is_high_intent, score_intent_signals
 from src.database import get_session_factory, init_db, reset_engine
-from src.integrations.acquisition import fetch_apollo_leads, push_to_instantly, upsert_prospect
+from src.integrations.acquisition import (
+    fetch_apollo_leads,
+    generate_icebreaker,
+    push_to_instantly,
+    upsert_prospect,
+)
 from src.models_db import DeadLetterJob, Organization, OutboundCampaign, ProspectLead
 from src.seed_commercial_demo import ACME_ORG_ID, seed_commercial_demo
 from src.tasks import run_daily_outbound_engine
@@ -251,5 +256,91 @@ def test_daily_outbound_engine_dispatches_high_intent(tmp_path, monkeypatch) -> 
     )
     assert lead.status == "in_sequence"
     assert lead.conversion_score > 80
+    session.close()
+    reset_engine()
+
+
+class _OpenAIMessage:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class _OpenAIChoice:
+    def __init__(self, content: str) -> None:
+        self.message = _OpenAIMessage(content)
+
+
+class _OpenAIResponse:
+    def __init__(self, content: str) -> None:
+        self.choices = [_OpenAIChoice(content)]
+
+
+class _OpenAICompletions:
+    def __init__(self) -> None:
+        self.calls = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return _OpenAIResponse("Saw Waveform just raised — curious how that's changing your outbound motion.")
+
+
+class _OpenAIChat:
+    def __init__(self) -> None:
+        self.completions = _OpenAICompletions()
+
+
+class _MockAsyncOpenAI:
+    def __init__(self) -> None:
+        self.chat = _OpenAIChat()
+
+
+def test_generate_icebreaker_uses_openai_and_intent_signals() -> None:
+    mock = _MockAsyncOpenAI()
+    text = asyncio.run(
+        generate_icebreaker("Waveform", ["recently raised funding"], client=mock)
+    )
+    assert text
+    assert "Waveform" in text or "raised" in text.lower()
+    kwargs = mock.chat.completions.calls[0]
+    user_prompt = kwargs["messages"][1]["content"]
+    assert "recently raised funding" in user_prompt
+    assert "Waveform" in user_prompt
+    assert "Do not use greetings or sign-offs" in user_prompt
+    assert "Sound like a peer" in user_prompt
+
+
+def test_push_to_instantly_attaches_mocked_icebreaker(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'ice.db'}")
+    reset_engine()
+    init_db()
+    seed_commercial_demo()
+    session = get_session_factory()()
+    org = session.get(Organization, ACME_ORG_ID)
+    org.instantly_api_key = "inst_live"
+    lead = upsert_prospect(
+        session,
+        ACME_ORG_ID,
+        {
+            "company_name": "Waveform",
+            "decision_maker_name": "Sam Rivera",
+            "email": "sam.ice@waveform.example",
+            "intent_signals": ["recently raised funding"],
+            "conversion_score": 20,
+        },
+    )
+    session.commit()
+
+    async def _fake_icebreaker(company_name, intent_signals, *, client=None):
+        assert company_name == "Waveform"
+        assert "recently raised funding" in list(intent_signals)
+        return "Noticed you just raised — how are you staffing that new pipeline?"
+
+    monkeypatch.setattr("src.integrations.acquisition.generate_icebreaker", _fake_icebreaker)
+    client = _AsyncClient([_Resp(200, {"id": "lead_ice"})])
+    result = asyncio.run(push_to_instantly(lead.id, "camp_ice", session=session, client=client))
+    assert result["ok"] is True
+    posted = client.calls[0]["json"]
+    assert posted["custom_icebreaker"].startswith("Noticed you just raised")
+    assert posted["custom_variables"]["custom_icebreaker"] == posted["custom_icebreaker"]
     session.close()
     reset_engine()
