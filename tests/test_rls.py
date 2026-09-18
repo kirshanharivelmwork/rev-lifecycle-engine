@@ -92,14 +92,19 @@ def test_pool_checkin_reset_helper_is_noop_on_sqlite(tmp_path, monkeypatch) -> N
     class _PgConn:
         def __init__(self):
             self.cur = _PgCursor()
+            self.rolled_back = False
 
         def cursor(self):
             return self.cur
+
+        def rollback(self):
+            self.rolled_back = True
 
     conn = _PgConn()
     reset_rls_on_dbapi(conn, "postgresql")
     assert conn.cur.executed
     assert "RESET app.current_org_id" in conn.cur.executed[0]
+    assert conn.rolled_back is True
 
 
 def test_organizations_remain_visible_under_rls(tmp_path, monkeypatch) -> None:

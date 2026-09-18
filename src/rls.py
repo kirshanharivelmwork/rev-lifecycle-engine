@@ -81,21 +81,17 @@ def register_pool_rls_reset(engine: Engine) -> None:
     engine._rls_checkin_registered = True  # type: ignore[attr-defined]
 
 
-def reset_rls_on_dbapi(dbapi_connection, dialect_name: str) -> None:
+def reset_rls_on_dbapi(dbapi_connection, dialect_name):
     if dbapi_connection is None:
         return
     if dialect_name != "postgresql":
         return
     cursor = dbapi_connection.cursor()
     try:
-        cursor.execute("RESET app.current_org_id")
-    except Exception:
-        try:
-            cursor.execute("SELECT set_config('app.current_org_id', '', false)")
-        except Exception:
-            LOGGER.debug("Could not RESET app.current_org_id on checkin", exc_info=True)
+        cursor.execute("RESET app.current_org_id;")
     finally:
         cursor.close()
+        dbapi_connection.rollback()  # THIS IS THE CRITICAL FIX
 
 
 def set_tenant_context(session: Session, org_id: Optional[str]) -> None:
