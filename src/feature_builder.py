@@ -56,6 +56,17 @@ def build_feature_row(session: Session, account: CustomerAccount, now: datetime 
     channel = account.channel if account.channel else "Paid Search"
     contract = account.contract_type if account.contract_type in {"Monthly", "Annual"} else "Monthly"
 
+    if account.contract_renewal_at:
+        renewal_at = account.contract_renewal_at
+    else:
+        period = 365 if contract == "Annual" else 30
+        renewal_at = (account.created_at or now) + timedelta(days=period)
+        while renewal_at < now:
+            renewal_at = renewal_at + timedelta(days=period)
+    days_until_renewal = max(int((renewal_at - now).days), 0)
+    inactivity = max(int(days_since), 0)
+    urgency_ratio = round(inactivity / float(max(days_until_renewal, 1)), 4)
+
     return pd.Series(
         {
             "customer_id": account.customer_external_id,
@@ -64,9 +75,11 @@ def build_feature_row(session: Session, account: CustomerAccount, now: datetime 
             "avg_weekly_logins": avg_weekly_logins,
             "feature_adoption_score": round(adoption, 2),
             "support_tickets_raised": len(tickets) + len(failures),
-            "days_since_last_login": max(int(days_since), 0),
+            "days_since_last_login": inactivity,
             "monthly_recurring_revenue": float(account.mrr or 0.0),
             "cac_usd": 500.0,
             "sales_touchpoints": 4,
+            "days_until_renewal": days_until_renewal,
+            "contract_renewal_urgency_ratio": urgency_ratio,
         }
     )

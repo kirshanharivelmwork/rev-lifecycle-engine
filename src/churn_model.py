@@ -62,6 +62,8 @@ NUMERIC_CANDIDATES = [
     "ltv_cac_ratio",
     "high_risk_inactivity",
     "engagement_index",
+    "days_until_renewal",
+    "contract_renewal_urgency_ratio",
 ]
 # Deterministic transforms of other columns — excluded from the GLM to keep VIF finite.
 LOGIT_EXCLUDE = {

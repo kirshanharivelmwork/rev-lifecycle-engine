@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from datetime import timedelta
+from typing import Any, Optional
 
 import pandas as pd
 import requests
@@ -13,8 +14,22 @@ from sqlalchemy.orm import Session
 from src.churn_model import load_or_train
 from src.database import get_session_factory
 from src.feature_builder import build_feature_row
-from src.models_db import ChurnAssessment, CustomerAccount, DispatchedAction, utcnow
-from src.paths import AT_RISK_THRESHOLD, INTERVENTION_SUCCESS_RATE, MODEL_VERSION
+from src.models_db import (
+    ChurnAssessment,
+    CustomerAccount,
+    DispatchedAction,
+    Organization,
+    utcnow,
+)
+from src.outcome_tracker import record_intervention_outcome
+from src.paths import (
+    AT_RISK_THRESHOLD,
+    DEFAULT_COOLDOWN_DAYS,
+    ESCALATION_PROBABILITY,
+    HITL_MRR_THRESHOLD,
+    INTERVENTION_SUCCESS_RATE,
+    MODEL_VERSION,
+)
 from src.scoring import assign_risk_tier, recommend_playbook, risk_drivers
 
 LOGGER = logging.getLogger(__name__)
@@ -125,8 +140,8 @@ def _email_copy(account: CustomerAccount, scored: dict[str, Any]) -> dict[str, s
     }
 
 
-def _post_slack(payload: dict[str, Any]) -> tuple[str, int | None]:
-    url = os.getenv("SLACK_WEBHOOK_URL") or os.getenv("WEBHOOK_URL")
+def _post_slack(payload: dict[str, Any], webhook_url: Optional[str] = None) -> tuple[str, Optional[int]]:
+    url = webhook_url or os.getenv("SLACK_WEBHOOK_URL") or os.getenv("WEBHOOK_URL")
     if not url:
         return "simulated", None
     try:
@@ -137,7 +152,7 @@ def _post_slack(payload: dict[str, Any]) -> tuple[str, int | None]:
         return "failed", None
 
 
-def _post_resend(email: dict[str, str]) -> tuple[str, int | None]:
+def _post_resend(email: dict[str, str]) -> tuple[str, Optional[int]]:
     api_key = os.getenv("RESEND_API_KEY")
     body = {
         "from": email["from"],
@@ -179,10 +194,58 @@ def _record_action(
     return action
 
 
+def _in_cooldown(account: CustomerAccount, now) -> bool:
+    if account.suppressed_until and now < account.suppressed_until:
+        return True
+    last = account.last_contacted_at
+    if not last:
+        return False
+    window = int(account.cooldown_days or DEFAULT_COOLDOWN_DAYS)
+    return (now - last) < timedelta(days=window)
+
+
+def _fire_channels(
+    session,
+    account: CustomerAccount,
+    scored: dict[str, Any],
+    *,
+    slack_url: Optional[str],
+) -> list[DispatchedAction]:
+    actions: list[DispatchedAction] = []
+    slack_payload = _slack_blocks(account, scored)
+    slack_status, slack_http = _post_slack(slack_payload, webhook_url=slack_url)
+    slack_payload = dict(slack_payload)
+    slack_payload["http_status"] = slack_http
+    slack_payload["trigger_reason"] = scored["drivers"]
+    slack_payload["mrr_saved_est"] = round(float(account.mrr) * 12.0 * INTERVENTION_SUCCESS_RATE, 2)
+    slack_action = _record_action(session, account, "slack", slack_payload, slack_status)
+    actions.append(slack_action)
+    record_intervention_outcome(session, account, slack_action)
+
+    email = _email_copy(account, scored)
+    email_status, email_http = _post_resend(email)
+    email_payload = {
+        **email,
+        "http_status": email_http,
+        "trigger_reason": scored["drivers"],
+        "model_version": MODEL_VERSION,
+        "mrr_saved_est": round(float(account.mrr) * 12.0 * INTERVENTION_SUCCESS_RATE, 2),
+    }
+    email_action = _record_action(session, account, "resend_email", email_payload, email_status)
+    actions.append(email_action)
+    record_intervention_outcome(session, account, email_action)
+    now = utcnow()
+    account.last_contacted_at = now
+    account.suppressed_until = now + timedelta(days=int(account.cooldown_days or DEFAULT_COOLDOWN_DAYS))
+    if account.approval_status == "pending":
+        account.approval_status = "approved"
+    return actions
+
+
 def evaluate_and_trigger_actions(
     account_id: str,
     org_id: str,
-    session: Session | None = None,
+    session: Optional[Any] = None,
     engine=None,
     force: bool = False,
 ) -> dict[str, Any]:
@@ -199,33 +262,40 @@ def evaluate_and_trigger_actions(
         if account is None:
             raise AccountNotFoundError(f"Account {account_id} not found for org {org_id}")
 
+        org = session.get(Organization, org_id)
         if engine is None:
             engine, _ = load_or_train(tune=False, persist=True)
         scored = _score_account(session, account, engine)
         actions: list[DispatchedAction] = []
-        triggered = scored["probability"] >= AT_RISK_THRESHOLD or force
+        probability = scored["probability"]
+        triggered = probability >= AT_RISK_THRESHOLD or force
+        now = utcnow()
+        escalate = probability > ESCALATION_PROBABILITY
+        cooldown = _in_cooldown(account, now) and not escalate and not force
 
-        if triggered:
-            slack_payload = _slack_blocks(account, scored)
-            slack_status, slack_http = _post_slack(slack_payload)
-            slack_payload = dict(slack_payload)
-            slack_payload["http_status"] = slack_http
-            slack_payload["trigger_reason"] = scored["drivers"]
-            slack_payload["mrr_saved_est"] = round(
-                float(account.mrr) * 12.0 * INTERVENTION_SUCCESS_RATE, 2
-            )
-            actions.append(_record_action(session, account, "slack", slack_payload, slack_status))
-
-            email = _email_copy(account, scored)
-            email_status, email_http = _post_resend(email)
-            email_payload = {
-                **email,
-                "http_status": email_http,
-                "trigger_reason": scored["drivers"],
-                "model_version": MODEL_VERSION,
-                "mrr_saved_est": round(float(account.mrr) * 12.0 * INTERVENTION_SUCCESS_RATE, 2),
+        if triggered and cooldown:
+            payload = {
+                "trigger_reason": "cooldown_window",
+                "churn_probability": probability,
+                "risk_tier": scored["assessment"].risk_tier,
             }
-            actions.append(_record_action(session, account, "resend_email", email_payload, email_status))
+            actions.append(_record_action(session, account, "system", payload, "suppressed_cooldown"))
+            result_status = "suppressed_cooldown"
+        elif triggered and float(account.mrr or 0) > HITL_MRR_THRESHOLD and not force and not escalate:
+            account.approval_status = "pending"
+            payload = {
+                "trigger_reason": scored["drivers"],
+                "churn_probability": probability,
+                "playbook": scored["playbook"],
+                "queue": "Pending CSM Approval",
+            }
+            actions.append(_record_action(session, account, "approval_queue", payload, "pending_approval"))
+            result_status = "pending_approval"
+        elif triggered:
+            actions.extend(_fire_channels(session, account, scored, slack_url=org.slack_webhook_url if org else None))
+            result_status = "dispatched"
+        else:
+            result_status = "below_threshold"
 
         if owns_session:
             session.commit()
@@ -233,13 +303,92 @@ def evaluate_and_trigger_actions(
             session.flush()
 
         return {
-            "triggered": triggered,
-            "probability": scored["probability"],
+            "triggered": triggered and result_status == "dispatched",
+            "status": result_status,
+            "probability": probability,
             "risk_tier": scored["assessment"].risk_tier,
             "assessment_id": scored["assessment"].id,
             "action_ids": [a.id for a in actions],
             "recommended_action": scored["playbook"],
         }
+    except Exception:
+        if owns_session:
+            session.rollback()
+        raise
+    finally:
+        if owns_session:
+            session.close()
+
+
+def approve_pending_dispatch(
+    account_id: str,
+    org_id: str,
+    session: Optional[Any] = None,
+    engine=None,
+) -> dict[str, Any]:
+    """Human-in-the-loop: release a pending high-MRR playbook."""
+    owns_session = session is None
+    if session is None:
+        session = get_session_factory()()
+    try:
+        account = (
+            session.query(CustomerAccount)
+            .filter(CustomerAccount.id == account_id, CustomerAccount.org_id == org_id)
+            .one_or_none()
+        )
+        if account is None:
+            raise AccountNotFoundError(f"Account {account_id} not found for org {org_id}")
+        org = session.get(Organization, org_id)
+        if engine is None:
+            engine, _ = load_or_train(tune=False, persist=True)
+        scored = _score_account(session, account, engine)
+        account.approval_status = "approved"
+        actions = _fire_channels(session, account, scored, slack_url=org.slack_webhook_url if org else None)
+        if owns_session:
+            session.commit()
+        else:
+            session.flush()
+        return {"status": "approved", "action_ids": [a.id for a in actions], "probability": scored["probability"]}
+    except Exception:
+        if owns_session:
+            session.rollback()
+        raise
+    finally:
+        if owns_session:
+            session.close()
+
+
+def dismiss_false_positive(
+    account_id: str,
+    org_id: str,
+    session: Optional[Any] = None,
+) -> dict[str, Any]:
+    owns_session = session is None
+    if session is None:
+        session = get_session_factory()()
+    try:
+        account = (
+            session.query(CustomerAccount)
+            .filter(CustomerAccount.id == account_id, CustomerAccount.org_id == org_id)
+            .one_or_none()
+        )
+        if account is None:
+            raise AccountNotFoundError(f"Account {account_id} not found for org {org_id}")
+        account.approval_status = "dismissed"
+        now = utcnow()
+        account.suppressed_until = now + timedelta(days=int(account.cooldown_days or DEFAULT_COOLDOWN_DAYS))
+        action = _record_action(
+            session,
+            account,
+            "approval_queue",
+            {"trigger_reason": "dismissed_false_positive"},
+            "dismissed",
+        )
+        if owns_session:
+            session.commit()
+        else:
+            session.flush()
+        return {"status": "dismissed", "action_id": action.id}
     except Exception:
         if owns_session:
             session.rollback()

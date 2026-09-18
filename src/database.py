@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -67,9 +67,32 @@ def get_db() -> Generator[Session, None, None]:
         session.close()
 
 
+def _ensure_column(engine: Engine, table: str, column: str, ddl: str) -> None:
+    inspector = inspect(engine)
+    if table not in inspector.get_table_names():
+        return
+    existing = {col["name"] for col in inspector.get_columns(table)}
+    if column in existing:
+        return
+    with engine.begin() as conn:
+        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {ddl}"))
+
+
+def migrate_schema(engine: Engine) -> None:
+    """Add newly introduced columns/tables without a full Alembic stack."""
+    Base.metadata.create_all(bind=engine)
+    _ensure_column(engine, "organizations", "slack_webhook_url", "slack_webhook_url TEXT")
+    _ensure_column(engine, "organizations", "stripe_webhook_secret", "stripe_webhook_secret TEXT")
+    _ensure_column(engine, "customer_accounts", "last_contacted_at", "last_contacted_at DATETIME")
+    _ensure_column(engine, "customer_accounts", "cooldown_days", "cooldown_days INTEGER DEFAULT 14")
+    _ensure_column(engine, "customer_accounts", "suppressed_until", "suppressed_until DATETIME")
+    _ensure_column(engine, "customer_accounts", "contract_renewal_at", "contract_renewal_at DATETIME")
+    _ensure_column(engine, "customer_accounts", "approval_status", "approval_status VARCHAR(32) DEFAULT 'none'")
+
+
 def init_db() -> Engine:
     engine = get_engine()
-    Base.metadata.create_all(bind=engine)
+    migrate_schema(engine)
     if database_url().startswith("sqlite"):
         with engine.connect() as conn:
             conn.execute(text("PRAGMA foreign_keys=ON"))

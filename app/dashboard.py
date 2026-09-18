@@ -15,6 +15,7 @@ import streamlit as st
 from sqlalchemy.orm import Session
 
 from src.database import get_session_factory, init_db
+from src.dispatcher import approve_pending_dispatch, dismiss_false_positive
 from src.models_db import (
     ChurnAssessment,
     CustomerAccount,
@@ -22,7 +23,8 @@ from src.models_db import (
     Organization,
     utcnow,
 )
-from src.paths import AT_RISK_THRESHOLD, INTERVENTION_SUCCESS_RATE, MODEL_VERSION
+from src.outcome_tracker import audit_intervention_outcomes
+from src.paths import AT_RISK_THRESHOLD, HITL_MRR_THRESHOLD, INTERVENTION_SUCCESS_RATE, MODEL_VERSION
 from src.seed_commercial_demo import seed_commercial_demo
 
 st.set_page_config(
@@ -152,6 +154,19 @@ def main() -> None:
         selected_name = st.sidebar.selectbox("Organization", list(names), index=default_ix)
         org = names[selected_name]
         st.sidebar.caption(f"`{org.org_id}` · {org.plan_tier} plan")
+        with st.sidebar.expander("Integrations & tenant settings", expanded=False):
+            slack_url = st.text_input("Slack webhook URL", value=org.slack_webhook_url or "", type="default")
+            stripe_secret = st.text_input(
+                "Stripe webhook secret",
+                value=org.stripe_webhook_secret or "",
+                type="password",
+            )
+            if st.button("Save tenant integrations"):
+                org.slack_webhook_url = slack_url.strip() or None
+                org.stripe_webhook_secret = stripe_secret.strip() or None
+                session.commit()
+                st.success("Saved Slack webhook and Stripe signing secret for this organization.")
+                st.rerun()
         st.sidebar.divider()
 
         book = _latest_assessments(session, org.org_id)
@@ -160,7 +175,8 @@ def main() -> None:
         active_arr = float(book["arr"].sum()) if not book.empty else 0.0
         at_risk = book.loc[book["churn_probability"] >= AT_RISK_THRESHOLD] if not book.empty else book
         at_risk_arr = float(at_risk["arr"].sum()) if not at_risk.empty else 0.0
-        arr_protected = at_risk_arr * INTERVENTION_SUCCESS_RATE
+        audit = audit_intervention_outcomes(org.org_id, session=session)
+        verified_arr = float(audit.get("verified_arr_saved") or 0.0)
         dispatched_count = len(actions)
 
         st.markdown(
@@ -170,94 +186,135 @@ def main() -> None:
         st.markdown('<p class="hero-title">Executive Revenue Command Center</p>', unsafe_allow_html=True)
         st.markdown(
             f'<p class="hero-sub">{selected_name} · {n_subs:,} monitored subscribers · '
-            f"model {MODEL_VERSION} · save-rate assumption {INTERVENTION_SUCCESS_RATE:.0%}</p>",
+            f"model {MODEL_VERSION} · HITL threshold ${HITL_MRR_THRESHOLD:,.0f} MRR</p>",
             unsafe_allow_html=True,
         )
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Monitored subscribers & active ARR", _fmt_money(active_arr), f"{n_subs:,} accounts")
-        c2.metric(
-            "ARR protected ($)",
-            _fmt_money(arr_protected),
-            help="Σ (at-risk MRR × 12) × 35% intervention success rate",
-        )
-        c3.metric("Dispatched interventions (this month)", f"{dispatched_count:,}")
+        command, staging = st.tabs(["Command Center", "Staging & Approval Queue"])
 
-        left, right = st.columns((1.15, 1))
-        with left:
-            st.markdown("### Live action stream")
-            stream_rows = []
-            for action in actions[:40]:
-                account = session.get(CustomerAccount, action.customer_account_id)
-                payload = action.payload or {}
-                stream_rows.append(
-                    {
-                        "when": action.created_at,
-                        "customer_id": account.customer_external_id if account else action.customer_account_id,
-                        "channel": action.channel,
-                        "status": action.status,
-                        "mrr_saved": payload.get("mrr_saved_est", (account.mrr * 12 * INTERVENTION_SUCCESS_RATE) if account else 0),
-                        "trigger_reason": payload.get("trigger_reason", ""),
-                    }
-                )
-            stream = pd.DataFrame(stream_rows)
-            if stream.empty:
-                st.info("No dispatched actions this month for this tenant.")
+        with command:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Monitored subscribers & active ARR", _fmt_money(active_arr), f"{n_subs:,} accounts")
+            c2.metric("Prospective ARR at risk", _fmt_money(at_risk_arr))
+            c3.metric(
+                "Verified ARR saved",
+                _fmt_money(verified_arr),
+                help="Empirical InterventionOutcome attribution (30/60/90-day audits)",
+            )
+            c4.metric("Dispatched interventions (this month)", f"{dispatched_count:,}")
+
+            left, right = st.columns((1.15, 1))
+            with left:
+                st.markdown("### Live action stream")
+                stream_rows = []
+                for action in actions[:40]:
+                    account = session.get(CustomerAccount, action.customer_account_id)
+                    payload = action.payload or {}
+                    stream_rows.append(
+                        {
+                            "when": action.created_at,
+                            "customer_id": account.customer_external_id if account else action.customer_account_id,
+                            "channel": action.channel,
+                            "status": action.status,
+                            "mrr_saved": payload.get("mrr_saved_est", (account.mrr * 12 * INTERVENTION_SUCCESS_RATE) if account else 0),
+                            "trigger_reason": payload.get("trigger_reason", ""),
+                        }
+                    )
+                stream = pd.DataFrame(stream_rows)
+                if stream.empty:
+                    st.info("No dispatched actions this month for this tenant.")
+                else:
+                    st.dataframe(
+                        stream,
+                        width="stretch",
+                        hide_index=True,
+                        column_config={
+                            "when": st.column_config.DatetimeColumn("Execution", format="YYYY-MM-DD HH:mm"),
+                            "mrr_saved": st.column_config.NumberColumn("Est. ARR saved", format="$%.0f"),
+                        },
+                    )
+            with right:
+                if not book.empty:
+                    fig = px.histogram(
+                        book,
+                        x="churn_probability",
+                        color="risk_tier",
+                        nbins=20,
+                        color_discrete_map={"Low": "#3ee0b1", "Medium": "#f5c542", "Critical": "#ff5c7a"},
+                        title="Book risk mix",
+                    )
+                    fig.update_layout(**PLOTLY_LAYOUT, bargap=0.08)
+                    st.plotly_chart(fig, width="stretch")
+
+            st.markdown("### Interactive ROI calculator")
+            p1, p2, p3 = st.columns(3)
+            with p1:
+                seat_price = st.number_input("Your subscription price (USD / month)", min_value=0, value=2500, step=100)
+            with p2:
+                save_rate = st.slider("CS intervention save rate", 0.05, 0.80, float(INTERVENTION_SUCCESS_RATE), 0.01)
+            with p3:
+                annual_saved = at_risk_arr * save_rate
+                platform_cost = seat_price * 12
+                net = annual_saved - platform_cost
+                st.metric("Projected annual revenue saved", _fmt_money(annual_saved))
+                st.metric("Net vs. platform cost", _fmt_money(net), f"{(annual_saved / platform_cost):.1f}× if cost>0" if platform_cost else None)
+
+            st.markdown("### At-risk book")
+            if book.empty:
+                st.info("No customer accounts for this organization.")
             else:
+                flagged = book.sort_values("churn_probability", ascending=False)
                 st.dataframe(
-                    stream,
+                    flagged.head(40),
                     width="stretch",
                     hide_index=True,
                     column_config={
-                        "when": st.column_config.DatetimeColumn("Execution", format="YYYY-MM-DD HH:mm"),
-                        "mrr_saved": st.column_config.NumberColumn("Est. ARR saved", format="$%.0f"),
+                        "churn_probability": st.column_config.NumberColumn("Churn p", format="%.1%"),
+                        "mrr": st.column_config.NumberColumn("MRR", format="$%.0f"),
+                        "arr": st.column_config.NumberColumn("ARR", format="$%.0f"),
                     },
                 )
-        with right:
-            if not book.empty:
-                fig = px.histogram(
-                    book,
-                    x="churn_probability",
-                    color="risk_tier",
-                    nbins=20,
-                    color_discrete_map={"Low": "#3ee0b1", "Medium": "#f5c542", "Critical": "#ff5c7a"},
-                    title="Book risk mix",
-                )
-                fig.update_layout(**PLOTLY_LAYOUT, bargap=0.08)
-                st.plotly_chart(fig, width="stretch")
 
-        st.markdown("### Interactive ROI calculator")
-        st.caption(
-            "Adjust the platform subscription you charge this customer and the CS save rate "
-            "to size annual revenue kept by the engine."
-        )
-        p1, p2, p3 = st.columns(3)
-        with p1:
-            seat_price = st.number_input("Your subscription price (USD / month)", min_value=0, value=2500, step=100)
-        with p2:
-            save_rate = st.slider("CS intervention save rate", 0.05, 0.80, float(INTERVENTION_SUCCESS_RATE), 0.01)
-        with p3:
-            annual_saved = at_risk_arr * save_rate
-            platform_cost = seat_price * 12
-            net = annual_saved - platform_cost
-            st.metric("Projected annual revenue saved", _fmt_money(annual_saved))
-            st.metric("Net vs. platform cost", _fmt_money(net), f"{(annual_saved / platform_cost):.1f}× if cost>0" if platform_cost else None)
-
-        st.markdown("### At-risk book")
-        if book.empty:
-            st.info("No customer accounts for this organization.")
-        else:
-            flagged = book.sort_values("churn_probability", ascending=False)
-            st.dataframe(
-                flagged.head(40),
-                width="stretch",
-                hide_index=True,
-                column_config={
-                    "churn_probability": st.column_config.NumberColumn("Churn p", format="%.1%"),
-                    "mrr": st.column_config.NumberColumn("MRR", format="$%.0f"),
-                    "arr": st.column_config.NumberColumn("ARR", format="$%.0f"),
-                },
+        with staging:
+            st.markdown("### Pending CSM approval")
+            st.caption(
+                f"Accounts with MRR > ${HITL_MRR_THRESHOLD:,.0f} wait in this queue before Slack/Resend fire. "
+                "Verified ARR saved is shown next to prospective at-risk ARR."
             )
+            v1, v2 = st.columns(2)
+            v1.metric("Verified ARR saved (empirical)", _fmt_money(verified_arr))
+            v2.metric("Prospective pipeline at risk", _fmt_money(at_risk_arr))
+            pending = (
+                session.query(CustomerAccount)
+                .filter(CustomerAccount.org_id == org.org_id, CustomerAccount.approval_status == "pending")
+                .all()
+            )
+            if not pending:
+                st.success("No playbooks waiting on CSM approval.")
+            for account in pending:
+                latest = (
+                    session.query(ChurnAssessment)
+                    .filter(ChurnAssessment.customer_account_id == account.id)
+                    .order_by(ChurnAssessment.assessed_at.desc())
+                    .first()
+                )
+                cols = st.columns((3, 1, 1))
+                with cols[0]:
+                    st.write(
+                        f"**{account.customer_external_id}** · ${account.mrr:,.0f} MRR · "
+                        f"{(latest.risk_tier if latest else 'n/a')} · "
+                        f"{(latest.recommended_action if latest else 'retention playbook')}"
+                    )
+                with cols[1]:
+                    if st.button("Approve Dispatch", key=f"approve_{account.id}"):
+                        approve_pending_dispatch(account.id, org.org_id, session=session)
+                        session.commit()
+                        st.rerun()
+                with cols[2]:
+                    if st.button("Dismiss / False Positive", key=f"dismiss_{account.id}"):
+                        dismiss_false_positive(account.id, org.org_id, session=session)
+                        session.commit()
+                        st.rerun()
     finally:
         session.close()
 

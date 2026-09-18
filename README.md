@@ -226,10 +226,13 @@ flowchart LR
 
 | Pillar | Module | What it does |
 | --- | --- | --- |
-| Multi-tenant schema | `src/models_db.py`, `src/database.py` | Org, CustomerAccount, TelemetryEvent, ChurnAssessment, DispatchedAction |
-| Live ingestion | `src/routers/ingestion.py` | `POST /api/v1/webhooks/stripe`, `POST /api/v1/webhooks/telemetry` |
-| Action engine | `src/dispatcher.py` | Score account; if p ≥ 0.65 send Slack Block Kit + Resend email (or simulate) |
-| ROI dashboard | `app/dashboard.py` | Org switcher, ARR protected, intervention count, live action stream, ROI calculator |
+| Multi-tenant schema | `src/models_db.py`, `src/database.py` | Org, CustomerAccount, TelemetryEvent, ChurnAssessment, DispatchedAction, IngestionJob, InterventionOutcome |
+| Secure ingestion | `src/routers/ingestion.py` | Stripe `Webhook.construct_event`; raw body + `Stripe-Signature`; HTTP 400 on failure. Local bypass only with `ALLOW_INSECURE_WEBHOOKS=1` when no secret is set |
+| Async workers | `src/tasks.py` | Webhooks persist payload, enqueue `IngestionJob`, return **HTTP 202** + `job_id`; BackgroundTasks (Celery/RQ-compatible) run transform, XGBoost, alerts with retries |
+| Cooldown engine | `src/dispatcher.py` | `last_contacted_at` / `cooldown_days` (14) / `suppressed_until`; duplicate Medium alerts log `suppressed_cooldown`. Critical (`p > 0.85`) bypasses |
+| Outcome attribution | `src/outcome_tracker.py` | 30/60/90-day Active/Churned/Downgraded audits; verified ARR saved instead of a static 35% save rate |
+| HITL dashboard | `app/dashboard.py` | Staging & Approval Queue for MRR > $1,000; Approve / Dismiss; tenant Slack URL + Stripe secret in sidebar |
+| Temporal features | `src/feature_builder.py` | `days_until_renewal`, `contract_renewal_urgency_ratio` |
 
 Default local DB is SQLite (`data/rev_lifecycle.db`) with `PRAGMA foreign_keys=ON`. Production: set `DATABASE_URL=postgresql+psycopg2://user:pass@host:5432/revlifecycle`.
 
@@ -255,7 +258,7 @@ curl -s -X POST http://127.0.0.1:8000/v1/predict \
   -H "X-API-Key: rle_acme_live_demo_key" \
   -d '{"customer_id":"cus_acme_000","acquisition_channel":"Paid Search","contract_type":"Monthly","avg_weekly_logins":1.0,"feature_adoption_score":2.2,"support_tickets_raised":4,"days_since_last_login":30,"monthly_recurring_revenue":640}'
 
-# Stripe customer upsert
+# Stripe customer upsert (returns 202 + job_id; set Stripe-Signature in production)
 curl -s -X POST http://127.0.0.1:8000/api/v1/webhooks/stripe \
   -H "Content-Type: application/json" \
   -H "X-Org-Id: org_acme" \
@@ -416,8 +419,12 @@ macOS note: XGBoost wheels need OpenMP (`brew install libomp`). The scorer falls
 | `test_health_ok` | `GET /health` returns HTTP 200 with status and model version |
 | `test_predict_returns_valid_payload` | `POST /v1/predict` returns HTTP 200, probability ∈ [0, 1], playbook, ARR at risk |
 | `test_multi_tenant_isolation` | Org A queries cannot see Org B `CustomerAccount` rows |
-| `test_stripe_webhook_ingests_customer_and_subscription` | Stripe `customer.created` + `subscription.updated` upsert MRR |
+| `test_stripe_webhook_ingests_customer_and_subscription` | Stripe events return 202 and upsert MRR asynchronously |
 | `test_action_dispatching_on_high_churn_accounts` | p ≥ 0.65 writes Slack + Resend `DispatchedAction` rows |
+| `test_stripe_signature_verification_rejects_invalid` | Invalid `Stripe-Signature` → HTTP 400 |
+| `test_telemetry_webhook_returns_202_job_id` | Telemetry ingest acknowledges with job ID |
+| `test_alert_suppressed_during_14_day_cooldown` | Medium-risk repeat alerts do not hit Slack/Resend |
+| `test_hitl_approval_workflow` | High-MRR accounts require Approve Dispatch before fire |
 
 ---
 

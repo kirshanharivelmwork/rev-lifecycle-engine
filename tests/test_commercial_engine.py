@@ -75,7 +75,9 @@ def test_multi_tenant_isolation(commercial_db) -> None:
 
 def test_stripe_webhook_ingests_customer_and_subscription(commercial_db, monkeypatch) -> None:
     session, _ = commercial_db
-    monkeypatch.setattr("src.routers.ingestion.evaluate_and_trigger_actions", lambda *a, **k: {"triggered": False})
+    monkeypatch.setenv("ALLOW_INSECURE_WEBHOOKS", "1")
+    monkeypatch.delenv("STRIPE_WEBHOOK_SECRET", raising=False)
+    monkeypatch.setattr("src.tasks.evaluate_and_trigger_actions", lambda *a, **k: {"triggered": False})
     from src.api import app
 
     with TestClient(app) as client:
@@ -93,9 +95,10 @@ def test_stripe_webhook_ingests_customer_and_subscription(commercial_db, monkeyp
                 },
             },
         )
-        assert created.status_code == 200, created.text
+        assert created.status_code == 202, created.text
         body = created.json()
-        assert body["customer_external_id"] == "cus_stripe_99"
+        assert body["accepted"] is True
+        assert body["job_id"]
         assert body["org_id"] == ACME_ORG_ID
 
         updated = client.post(
@@ -121,9 +124,8 @@ def test_stripe_webhook_ingests_customer_and_subscription(commercial_db, monkeyp
                 },
             },
         )
-        assert updated.status_code == 200, updated.text
-        assert updated.json()["mrr"] == pytest.approx(98.0)
-        assert updated.json()["contract_type"] == "Monthly"
+        assert updated.status_code == 202, updated.text
+        assert updated.json()["job_id"]
 
     session.expire_all()
     account = (

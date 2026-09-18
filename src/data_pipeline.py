@@ -87,6 +87,20 @@ def engineer_lifecycle_features(df: pd.DataFrame) -> pd.DataFrame:
     out["engagement_index"] = (
         out["avg_weekly_logins"] * 0.4 + out["feature_adoption_score"] * 0.6
     )
+    if "days_until_renewal" not in out.columns:
+        inactivity = out["days_since_last_login"].clip(lower=0)
+        is_annual = (
+            out["contract_type"].astype(str).eq("Annual")
+            if "contract_type" in out.columns
+            else pd.Series(False, index=out.index)
+        )
+        monthly_left = (30 - (inactivity % 30)).clip(lower=1)
+        annual_left = (365 - (inactivity % 365)).clip(lower=1)
+        out["days_until_renewal"] = monthly_left.where(~is_annual, annual_left).astype(int)
+    if "contract_renewal_urgency_ratio" not in out.columns:
+        out["contract_renewal_urgency_ratio"] = (
+            out["days_since_last_login"].clip(lower=0) / out["days_until_renewal"].clip(lower=1)
+        )
     return out
 
 

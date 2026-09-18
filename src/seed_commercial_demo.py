@@ -16,6 +16,8 @@ from src.models_db import (
     ChurnAssessment,
     CustomerAccount,
     DispatchedAction,
+    IngestionJob,
+    InterventionOutcome,
     Organization,
     TelemetryEvent,
     utcnow,
@@ -36,6 +38,8 @@ CHANNELS = ("Outbound Cold Email", "Inbound Organic", "Paid Search", "Partner Re
 
 
 def _wipe_org(session, org_id: str) -> None:
+    session.query(InterventionOutcome).filter(InterventionOutcome.org_id == org_id).delete()
+    session.query(IngestionJob).filter(IngestionJob.org_id == org_id).delete()
     session.query(DispatchedAction).filter(DispatchedAction.org_id == org_id).delete()
     session.query(ChurnAssessment).filter(ChurnAssessment.org_id == org_id).delete()
     session.query(TelemetryEvent).filter(TelemetryEvent.org_id == org_id).delete()
@@ -65,6 +69,9 @@ def _seed_acme_accounts(session, org: Organization) -> list[CustomerAccount]:
         channel = CHANNELS[i % 4]
         contract = "Monthly" if risky or i % 3 == 0 else "Annual"
         mrr = 180.0 + (i * 37) % 900
+        if i in {0, 1, 2}:
+            mrr = 1400.0 + i * 80
+        period = 30 if contract == "Monthly" else 365
         account = CustomerAccount(
             org_id=org.org_id,
             customer_external_id=f"cus_acme_{i:03d}",
@@ -72,6 +79,9 @@ def _seed_acme_accounts(session, org: Organization) -> list[CustomerAccount]:
             mrr=float(mrr),
             contract_type=contract,
             created_at=now - timedelta(days=200 - i),
+            contract_renewal_at=now + timedelta(days=period - (i % 12)),
+            cooldown_days=14,
+            approval_status="pending" if i in {0, 1, 2} else "none",
         )
         session.add(account)
         session.flush()
@@ -117,20 +127,43 @@ def _seed_acme_accounts(session, org: Organization) -> list[CustomerAccount]:
             )
             if i < 8:
                 for channel_name in ("slack", "resend_email"):
+                    action = DispatchedAction(
+                        org_id=org.org_id,
+                        customer_account_id=account.id,
+                        channel=channel_name,
+                        status="simulated",
+                        created_at=now - timedelta(days=40 + i % 5),
+                        payload={
+                            "trigger_reason": "28d dark (critical inactivity); low adoption",
+                            "mrr_saved_est": round(mrr * 12 * INTERVENTION_SUCCESS_RATE, 2),
+                            "churn_probability": probability,
+                        },
+                    )
+                    session.add(action)
+                    session.flush()
                     session.add(
-                        DispatchedAction(
+                        InterventionOutcome(
                             org_id=org.org_id,
                             customer_account_id=account.id,
-                            channel=channel_name,
-                            status="simulated",
-                            created_at=now - timedelta(days=i % 12, hours=2),
-                            payload={
-                                "trigger_reason": "28d dark (critical inactivity); low adoption",
-                                "mrr_saved_est": round(mrr * 12 * INTERVENTION_SUCCESS_RATE, 2),
-                                "churn_probability": probability,
-                            },
+                            dispatched_action_id=action.id,
+                            intervention_date=action.created_at,
+                            initial_mrr=float(mrr),
+                            status_at_30d="Active",
+                            verified_arr_saved=round(mrr * 12, 2),
+                            attributed=True,
                         )
                     )
+            if i in {0, 1, 2}:
+                session.add(
+                    DispatchedAction(
+                        org_id=org.org_id,
+                        customer_account_id=account.id,
+                        channel="approval_queue",
+                        status="pending_approval",
+                        created_at=now - timedelta(hours=2),
+                        payload={"queue": "Pending CSM Approval", "playbook": "CSM re-engagement sprint"},
+                    )
+                )
         else:
             for day in range(6):
                 session.add(
