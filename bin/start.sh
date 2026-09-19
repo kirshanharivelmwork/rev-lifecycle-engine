@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 export PYTHONPATH="${PYTHONPATH:-$ROOT}"
+export REDIS_URL="redis://default:gSXJZXJBCVKPDJmSsBAMWBEjTKyAVoct@redis.railway.internal:6379"
 
 # Railway injects PORT for public HTTP. FastAPI stays on an internal port that
 # matches Next.js rewrites (http://127.0.0.1:8000 baked at image build).
@@ -92,7 +93,7 @@ raise SystemExit(f"FastAPI did not become ready on {url}: {last}")
 PY
 
 if [[ "${RUN_CELERY}" == "1" || "${RUN_CELERY}" == "true" ]]; then
-  celery -A src.worker.celery_app worker --loglevel=info &
+  celery -A src.worker.celery_app worker --loglevel=info --pool=solo &
   WORKER_PID=$!
 fi
 
