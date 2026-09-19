@@ -1,3 +1,15 @@
+export type QuotaMeter = {
+  used: number;
+  max: number;
+  remaining: number;
+};
+
+export type PlanQuotas = {
+  customer_accounts: QuotaMeter;
+  prospect_leads: QuotaMeter;
+  ingest_runs_per_utc_day: QuotaMeter;
+};
+
 export type TenantSummary = {
   name: string;
   org_id: string;
@@ -73,6 +85,7 @@ export type SettingsPayload = {
   };
   api_base?: string;
   salesforce_instance_url: string | null;
+  quotas?: PlanQuotas;
   audit_log: {
     when: string;
     actor: string;
@@ -90,6 +103,7 @@ export type BillingPayload = {
   stripe_customer_id: string | null;
   portal_available: boolean;
   needs_payment: boolean;
+  quotas?: PlanQuotas;
 };
 
 export type JobsPayload = {

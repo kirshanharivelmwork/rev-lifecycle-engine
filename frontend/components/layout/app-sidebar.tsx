@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { LayoutDashboard, DoorOpen, ShieldCheck, Settings2, CreditCard, AlertTriangle } from "lucide-react";
 
+import { LegalFooter } from "@/components/legal/legal-footer";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -109,6 +110,9 @@ export function AppSidebar() {
       <p className="px-2 text-xs leading-relaxed text-muted-foreground">
         Configure Stripe, Slack, Resend, Apollo, Instantly, and HITL in Tenant Settings.
       </p>
+      <div className="px-2">
+        <LegalFooter className="mt-4 text-xs" />
+      </div>
     </aside>
   );
 }

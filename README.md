@@ -2,9 +2,9 @@
 
 [![Live Command Center](https://img.shields.io/badge/Live-Command%20Center-0ea5e9)](https://rev-lifecycle-engine-production.up.railway.app)
 [![Stripe ingestion](https://img.shields.io/badge/Stripe-webhook%20%2Fapi%2Fv1%2Fwebhooks%2Fstripe-635bff)](https://rev-lifecycle-engine-production.up.railway.app/api/v1/webhooks/stripe)
-[![Test status](https://img.shields.io/badge/tests-115%20passing-22c55e)](#testing)
+[![Test status](https://img.shields.io/badge/tests-121%20passing-22c55e)](#testing)
 
-**Production (Railway):** [Executive Command Center](https://rev-lifecycle-engine-production.up.railway.app) · Stripe ingest [`POST /api/v1/webhooks/stripe`](https://rev-lifecycle-engine-production.up.railway.app/api/v1/webhooks/stripe) · **115** unit & integration tests passing
+**Production (Railway):** [Executive Command Center](https://rev-lifecycle-engine-production.up.railway.app) · Stripe ingest [`POST /api/v1/webhooks/stripe`](https://rev-lifecycle-engine-production.up.railway.app/api/v1/webhooks/stripe) · **121** unit & integration tests passing
 
 **Production stack:** FastAPI + Next.js + Clerk JWT. Railway serves the Next.js UI on `$PORT` (typically 3000) and FastAPI internally on port 8000 (`bin/start.sh`). Authenticated product APIs expect `Authorization: Bearer <Clerk JWT>`. Streamlit (`app/dashboard.py`) remains in the repo as a legacy local analytics notebook UI — it is **not** the production product.
 
@@ -450,6 +450,18 @@ Self-serve Growth billing is Clerk-authenticated Stripe Checkout:
 4. The app lands on `/?session_id=...`, confirms the session via `POST /api/v1/billing/confirm-checkout`, polls until `subscription_status=active`, then loads the Command Center. An empty book is expected until an Admin runs **historical backfill** from Settings (which scores every hydrated account).
 5. `GET /api/v1/billing` and `POST /api/v1/billing/portal` expose plan status and the Stripe Customer Portal (invoices, card, cancel). `incomplete` / `past_due` / `canceled` tenants receive HTTP 402 on product APIs and an **Update payment** path in the UI.
 
+### Growth plan quotas
+
+Caps are keyed off `Organization.plan_tier` (unknown tiers use **growth** defaults). Seeded demo tenants (50 accounts, 4 prospects) stay under these limits. Exceeding a cap returns HTTP **403** with `{"error": "plan_limit", "limit": "...", "used": N, "max": M}`. Remaining quota is shown on Billing and Settings (`GET /api/v1/billing`, `GET /api/v1/settings`).
+
+| Limit | Growth max | Enforced on |
+| --- | ---: | --- |
+| Customer accounts | **250** | CSV ingest, Stripe account upsert, historical backfill |
+| Prospect leads | **100** | Apollo / prospect upsert |
+| CSV ingest + historical backfill runs | **15** per org per UTC day | `POST /api/v1/ingestion/csv`, `POST /api/v1/backfill` |
+
+Public legal templates (not legal advice): [`/privacy`](https://rev-lifecycle-engine-production.up.railway.app/privacy) · [`/terms`](https://rev-lifecycle-engine-production.up.railway.app/terms) · [`/dpa`](https://rev-lifecycle-engine-production.up.railway.app/dpa). Locally: `/privacy`, `/terms`, `/dpa` (Clerk-public, no sidebar).
+
 ### Environment contract
 
 | Variable | Role |
@@ -626,7 +638,7 @@ macOS note: XGBoost wheels need OpenMP (`brew install libomp`). The scorer falls
 
 ## Testing
 
-`python3 -m pytest` currently runs **115** passing tests across pipeline, auth, dashboard, CSV ingest, Checkout, webhooks, acquisition, billing, backfill scoring, jobs, health, Sentry, and Alembic. Representative coverage:
+`python3 -m pytest` currently runs **121** passing tests across pipeline, auth, dashboard, CSV ingest, Checkout, webhooks, acquisition, billing, plan quotas, backfill scoring, jobs, health, Sentry, and Alembic. Representative coverage:
 
 | Test | Asserts |
 | --- | --- |
@@ -644,6 +656,9 @@ macOS note: XGBoost wheels need OpenMP (`brew install libomp`). The scorer falls
 | `test_stamp_then_upgrade_on_existing_tables` | Seeded DBs are stamped before upgrade |
 | `test_tenant_endpoint_returns_auth_user_role` | `GET /api/v1/tenant` returns `role` / `is_admin` from FastAPI `AuthUser` |
 | `test_csv_upload_writes_churn_assessments` | Admin CSV upload upserts accounts/telemetry and writes `ChurnAssessment` rows; duplicate file is skipped |
+| `test_csv_over_account_quota_is_rejected` | New CSV accounts over the Growth cap return HTTP 403 `plan_limit` |
+| `test_csv_under_account_quota_succeeds` | CSV ingest under the account cap returns 202 |
+| `test_billing_and_settings_include_remaining_quota` | `GET /billing` and `GET /settings` expose remaining plan quota |
 | `test_init_sentry_noop_without_dsn` | Sentry does not initialize unless `SENTRY_DSN` is set |
 | `test_predict_returns_valid_payload` | `POST /v1/predict` returns HTTP 200, probability ∈ [0, 1], playbook, ARR at risk |
 | `test_create_checkout_session_returns_stripe_url` | Clerk JWT creates a Stripe Checkout session for the org |

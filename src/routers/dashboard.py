@@ -26,6 +26,7 @@ from src.models_db import (
 )
 from src.outcome_tracker import audit_intervention_outcomes
 from src.paths import AT_RISK_THRESHOLD, HITL_MRR_THRESHOLD, INTERVENTION_SUCCESS_RATE, MODEL_VERSION
+from src.quotas import quota_snapshot
 from src.tasks import trigger_outbound_engine
 from src.urls import public_api_base, webhook_urls
 
@@ -258,6 +259,7 @@ def get_tenant_settings(
         "webhook_urls": webhook_urls(),
         "api_base": public_api_base(),
         "salesforce_instance_url": org.salesforce_instance_url,
+        "quotas": quota_snapshot(db, org),
         "audit_log": [
             {
                 "when": row.created_at.isoformat() if isinstance(row.created_at, datetime) else str(row.created_at),

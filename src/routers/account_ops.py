@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from src.feature_builder import parse_timestamp
 from src.models_db import CustomerAccount, Organization, TelemetryEvent, utcnow
+from src.quotas import ensure_customer_account_quota
 
 _SUBSCRIPTION_STATUS_MAP = {
     "active": "active",
@@ -114,6 +115,7 @@ def upsert_customer_account(
         .one_or_none()
     )
     if account is None:
+        ensure_customer_account_quota(db, org, additional=1)
         account = CustomerAccount(
             org_id=org.org_id,
             customer_external_id=external_id,

@@ -12,8 +12,9 @@ from sqlalchemy.orm import Session
 
 from src.data_pipeline import LEAD_SCHEMA, TELEMETRY_SCHEMA, SchemaValidationError
 from src.dispatcher import _score_account
-from src.models_db import ChurnAssessment, CustomerAccount, Organization, TelemetryEvent, utcnow
+from src.models_db import ChurnAssessment, CustomerAccount, IdempotentEvent, Organization, TelemetryEvent, utcnow
 from src.paths import ACQUISITION_CHANNELS, CONTRACT_TYPES
+from src.quotas import ensure_customer_account_quota, ensure_ingest_run_quota, record_ingest_run
 from src.routers.account_ops import upsert_customer_account
 from src.routers.ingestion import claim_idempotent_event
 
@@ -119,9 +120,36 @@ def ingest_combined_csv(
     digest = csv_digest(payload)
     event_id = f"csv_{digest}"
     frame = parse_combined_csv(payload)
-    claimed = claim_idempotent_event(session, org.org_id, event_id, "csv")
     existing_accounts = session.query(CustomerAccount).filter(CustomerAccount.org_id == org.org_id).count()
     existing_assessments = session.query(ChurnAssessment).filter(ChurnAssessment.org_id == org.org_id).count()
+    already = (
+        session.query(IdempotentEvent)
+        .filter(IdempotentEvent.org_id == org.org_id, IdempotentEvent.event_id == event_id)
+        .one_or_none()
+    )
+    if already:
+        return {
+            "ok": True,
+            "accepted": False,
+            "status": "skipped",
+            "reason": "duplicate",
+            "org_id": org.org_id,
+            "event_id": event_id,
+            "accounts_upserted": 0,
+            "assessments_written": 0,
+            "account_count": existing_accounts,
+            "assessment_count": existing_assessments,
+        }
+    incoming_ids = {str(row["customer_id"]) for row in frame.to_dict(orient="records")}
+    known = {
+        row.customer_external_id
+        for row in session.query(CustomerAccount)
+        .filter(CustomerAccount.org_id == org.org_id, CustomerAccount.customer_external_id.in_(incoming_ids))
+        .all()
+    }
+    ensure_ingest_run_quota(session, org, additional=1)
+    ensure_customer_account_quota(session, org, additional=len(incoming_ids - known))
+    claimed = claim_idempotent_event(session, org.org_id, event_id, "csv")
     if not claimed:
         return {
             "ok": True,
@@ -135,6 +163,7 @@ def ingest_combined_csv(
             "account_count": existing_accounts,
             "assessment_count": existing_assessments,
         }
+    record_ingest_run(session, org, "csv", status="scored", payload={"event_id": event_id})
     if engine is None:
         from src.churn_model import load_or_train
 

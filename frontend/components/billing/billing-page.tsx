@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 
+import { QuotaMeters } from "@/components/billing/quota-meters";
 import { PaymentCta } from "@/components/billing/payment-cta";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -53,6 +54,8 @@ export function BillingPage() {
       </header>
 
       {data.needs_payment ? <PaymentCta message={statusCopy(data.subscription_status)} /> : null}
+
+      <QuotaMeters quotas={data.quotas} />
 
       <section className="grid gap-4 sm:grid-cols-3">
         <Card className="rounded-2xl border-border shadow-card">

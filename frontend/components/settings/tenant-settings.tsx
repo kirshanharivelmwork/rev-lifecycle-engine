@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import Link from "next/link";
 
+import { QuotaMeters } from "@/components/billing/quota-meters";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useOrgRole } from "@/hooks/use-org-role";
@@ -160,6 +161,8 @@ export function TenantSettings() {
         {!isAdmin ? <p className="mt-2 text-sm text-muted-foreground">{ADMIN_REASON}</p> : null}
       </header>
 
+      <QuotaMeters quotas={data.quotas} />
+
       <Card className="rounded-2xl border-border shadow-card">
         <CardHeader>
           <CardTitle>First-run checklist</CardTitle>
@@ -173,7 +176,7 @@ export function TenantSettings() {
         </CardContent>
       </Card>
 
-      <Card className="rounded-2xl border-border shadow-card">
+      <Card id="csv-book" className="rounded-2xl border-border shadow-card">
         <CardHeader>
           <CardTitle>Score CSV Book</CardTitle>
           <CardDescription>
@@ -224,7 +227,7 @@ export function TenantSettings() {
       </Card>
 
       {emptyBook ? (
-        <Card className="rounded-2xl border-border shadow-card">
+        <Card id="historical-backfill" className="rounded-2xl border-border shadow-card">
           <CardHeader>
             <CardTitle>Day-1 empty book</CardTitle>
             <CardDescription>
@@ -281,7 +284,7 @@ export function TenantSettings() {
           </CardContent>
         </Card>
       ) : (
-        <Card className="rounded-2xl border-border shadow-card">
+        <Card id="historical-backfill" className="rounded-2xl border-border shadow-card">
           <CardHeader>
             <CardTitle>Historical backfill</CardTitle>
             <CardDescription>

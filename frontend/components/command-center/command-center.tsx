@@ -151,26 +151,32 @@ export function CommandCenter() {
           <CardHeader>
             <CardTitle>Your book is empty</CardTitle>
             <CardDescription>
-              A new Clerk workspace has no customers until you score a CSV book or backfill Stripe history. Open Settings
-              to upload a combined CSV (no Stripe secret required).
+              A new Clerk workspace has no customers until you hydrate history. Open Settings to run Stripe backfill or
+              upload a combined CSV (no Stripe secret required).
             </CardDescription>
           </CardHeader>
-          <CardContent>
-            <Link className="text-sm font-medium text-primary underline-offset-4 hover:underline" href="/settings">
-              Open Settings to score a CSV book
+          <CardContent className="flex flex-wrap gap-4">
+            <Link className="text-sm font-medium text-primary underline-offset-4 hover:underline" href="/settings#csv-book">
+              Upload a CSV book in Settings
+            </Link>
+            <Link
+              className="text-sm font-medium text-primary underline-offset-4 hover:underline"
+              href="/settings#historical-backfill"
+            >
+              Run Stripe historical backfill in Settings
             </Link>
           </CardContent>
         </Card>
-      ) : null}
-
-      <KpiGrid kpis={data.kpis} subscriberCount={tenant.subscriber_count ?? 0} />
-
-      <section className="grid gap-4 xl:grid-cols-[1.15fr_1fr]">
-        <ActionStream rows={data.action_stream} />
-        <BookRiskChart data={data.risk_mix} />
-      </section>
-
-      <AtRiskBook rows={data.at_risk_book} />
+      ) : (
+        <>
+          <KpiGrid kpis={data.kpis} subscriberCount={tenant.subscriber_count ?? 0} />
+          <section className="grid gap-4 xl:grid-cols-[1.15fr_1fr]">
+            <ActionStream rows={data.action_stream} />
+            <BookRiskChart data={data.risk_mix} />
+          </section>
+          <AtRiskBook rows={data.at_risk_book} />
+        </>
+      )}
     </div>
   );
 }

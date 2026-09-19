@@ -3,6 +3,7 @@
 import { SignInButton, useAuth } from "@clerk/nextjs";
 import { useState } from "react";
 
+import { LegalFooter } from "@/components/legal/legal-footer";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { apiFetch } from "@/lib/api";
@@ -87,6 +88,7 @@ export function PricingPage() {
             <PricingSubscribe />
           </CardContent>
         </Card>
+        <LegalFooter />
       </div>
     </div>
   );

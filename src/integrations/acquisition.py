@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from src.conversion_model import score_intent_signals
 from src.dead_letter import record_dead_letter
 from src.models_db import Organization, OutboundCampaign, ProspectLead, utcnow
+from src.quotas import ensure_prospect_lead_quota
 from src.security import decrypt_secret
 
 LOGGER = logging.getLogger(__name__)
@@ -95,6 +96,9 @@ def upsert_prospect(session: Session, org_id: str, fields: dict[str, Any]) -> Op
         existing.updated_at = now
         session.flush()
         return existing
+    org = session.get(Organization, org_id)
+    if org is not None:
+        ensure_prospect_lead_quota(session, org, additional=1)
     lead = ProspectLead(
         org_id=org_id,
         company_name=fields["company_name"],

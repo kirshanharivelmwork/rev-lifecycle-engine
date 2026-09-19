@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from src.feature_builder import parse_timestamp
 from src.models_db import CustomerAccount, Organization, TelemetryEvent, new_id, utcnow
+from src.quotas import ensure_customer_account_quota
 from src.routers.account_ops import mrr_from_subscription
 
 LOGGER = logging.getLogger(__name__)
@@ -369,6 +370,12 @@ def _apply_accounts(
         row.customer_external_id: row
         for row in session.query(CustomerAccount).filter(CustomerAccount.org_id == org.org_id).all()
     }
+    incoming_ids: set[str] = set(by_id.keys())
+    incoming_ids.update(
+        cid for cid in (_subscription_customer_id(sub) for sub in subscriptions) if cid
+    )
+    new_ids = incoming_ids - set(existing.keys())
+    ensure_customer_account_quota(session, org, additional=len(new_ids))
     pending: list[CustomerAccount] = []
 
     def upsert(external_id: str, fields: dict[str, Any]) -> CustomerAccount:

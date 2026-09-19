@@ -26,6 +26,7 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from src.auth import AuthUser, get_current_org, get_current_user, require_admin_role
 from src.billing import INGEST_LIMIT, SubscriptionInactive, billing_json_response, limiter
+from src.quotas import PlanLimitExceeded, ensure_ingest_run_quota, plan_limit_response, record_ingest_run
 from src.churn_model import ChurnScoringEngine, load_or_train
 from src.database import get_db, init_db
 from src.models_db import Organization
@@ -237,6 +238,11 @@ async def _subscription_inactive(_request: Request, _exc: SubscriptionInactive):
     return billing_json_response()
 
 
+@app.exception_handler(PlanLimitExceeded)
+async def _plan_limit(_request: Request, exc: PlanLimitExceeded):
+    return plan_limit_response(exc)
+
+
 @app.exception_handler(RateLimitExceeded)
 async def _rate_limited(_request: Request, _exc: RateLimitExceeded):
     return JSONResponse(status_code=429, content={"error": "Too Many Requests"})
@@ -309,6 +315,7 @@ def trigger_historical_backfill(
     payload: HistoricalBackfillRequest,
     _admin: AuthUser = Depends(require_admin_role),
     org: Organization = Depends(get_current_org),
+    db: Session = Depends(get_db),
 ) -> HistoricalBackfillResponse:
     stripe_key = (
         (payload.stripe_api_key or "").strip()
@@ -318,6 +325,9 @@ def trigger_historical_backfill(
     )
     if not stripe_key:
         raise HTTPException(status_code=400, detail="stripe_api_key is required to hydrate billing history")
+    ensure_ingest_run_quota(db, org, additional=1)
+    record_ingest_run(db, org, "historical_backfill", status="queued")
+    db.commit()
     run_historical_backfill.delay(
         org.org_id,
         stripe_key,

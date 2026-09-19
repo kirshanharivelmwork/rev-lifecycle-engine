@@ -9,7 +9,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from src.auth import AuthUser, generate_api_key, get_current_org_unpaid, hash_api_key
+from src.database import get_db
 from src.models_db import Organization
+from src.quotas import quota_snapshot
 
 router = APIRouter(tags=["billing"])
 
@@ -30,8 +32,9 @@ def _billing_payload(org: Organization) -> dict[str, Any]:
 @router.get("/billing")
 def get_billing_status(
     org: Organization = Depends(get_current_org_unpaid),
+    db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    return _billing_payload(org)
+    return {**_billing_payload(org), "quotas": quota_snapshot(db, org)}
 
 
 def _frontend_url() -> str:
