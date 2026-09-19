@@ -4,19 +4,22 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 export PYTHONPATH="${PYTHONPATH:-$ROOT}"
-export PORT="${PORT:-3000}"
+
+# Railway injects PORT for public HTTP. FastAPI stays on an internal port that
+# matches Next.js rewrites (http://127.0.0.1:8000 baked at image build).
+PORT="${PORT:-3000}"
+API_PORT="${API_PORT:-8000}"
+export PORT
+export API_PORT
+export API_INTERNAL_URL="${API_INTERNAL_URL:-http://127.0.0.1:${API_PORT}}"
 RUN_CELERY="${RUN_CELERY:-1}"
 
 API_PID=""
-UI_PID=""
 WORKER_PID=""
 
 cleanup() {
   if [[ -n "${API_PID}" ]]; then
     kill "${API_PID}" 2>/dev/null || true
-  fi
-  if [[ -n "${UI_PID}" ]]; then
-    kill "${UI_PID}" 2>/dev/null || true
   fi
   if [[ -n "${WORKER_PID}" ]]; then
     kill "${WORKER_PID}" 2>/dev/null || true
@@ -66,23 +69,34 @@ except Exception:
     raise
 PY
 
-uvicorn src.api:app --host 0.0.0.0 --port 8000 &
+uvicorn src.api:app --host 0.0.0.0 --port "${API_PORT}" &
 API_PID=$!
+
+python3 - <<PY
+import time
+import urllib.request
+
+url = "http://127.0.0.1:${API_PORT}/health"
+last = None
+for _ in range(40):
+    try:
+        with urllib.request.urlopen(url, timeout=1) as response:
+            if response.status < 500:
+                raise SystemExit(0)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        last = exc
+        time.sleep(0.25)
+raise SystemExit(f"FastAPI did not become ready on {url}: {last}")
+PY
 
 if [[ "${RUN_CELERY}" == "1" || "${RUN_CELERY}" == "true" ]]; then
   celery -A src.worker.celery_app worker --loglevel=info &
   WORKER_PID=$!
 fi
 
-(
-  cd "$ROOT/frontend"
-  ./node_modules/.bin/next start --hostname 0.0.0.0 --port "${PORT}"
-) &
-UI_PID=$!
-
-if [[ -n "${WORKER_PID}" ]]; then
-  wait -n "${API_PID}" "${UI_PID}" "${WORKER_PID}" || true
-else
-  wait -n "${API_PID}" "${UI_PID}" || true
-fi
-wait || true
+cd "$ROOT/frontend"
+# Bind the public Next.js server to Railway's $PORT on all interfaces.
+export HOSTNAME=0.0.0.0
+npm start -- -H 0.0.0.0 -p "${PORT}"
