@@ -1,8 +1,10 @@
-"""Seed Acme SaaS + Globex tenants for local commercial demos."""
+"""Seed a Clerk-backed primary tenant plus an optional Globex isolation tenant."""
 
 from __future__ import annotations
 
+import argparse
 import logging
+import os
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -31,13 +33,35 @@ from src.paths import INTERVENTION_SUCCESS_RATE
 
 LOGGER = logging.getLogger(__name__)
 
-ACME_ORG_ID = "org_acme"
 ACME_API_KEY = "rle_acme_live_demo_key"
 ACME_NAME = "Acme SaaS"
 
 GLOBEX_ORG_ID = "org_globex"
 GLOBEX_API_KEY = "rle_globex_live_demo_key"
 GLOBEX_NAME = "Globex Analytics"
+
+
+def resolve_org_id(explicit: str | None = None) -> str:
+    """Clerk organization id from CLI, then CLERK_ORG_ID. Never defaults to org_acme."""
+    org_id = (explicit or os.getenv("CLERK_ORG_ID") or "").strip()
+    if not org_id:
+        raise ValueError("Clerk organization id required: pass --org-id or set CLERK_ORG_ID")
+    return org_id
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Seed commercial demo tenants.")
+    parser.add_argument(
+        "--org-id",
+        default=None,
+        help="Primary Clerk organization id (overrides CLERK_ORG_ID)",
+    )
+    parser.add_argument(
+        "--skip-globex",
+        action="store_true",
+        help="Seed only the primary Clerk tenant (recommended in production)",
+    )
+    return parser.parse_args(argv)
 
 CHANNELS = ("Outbound Cold Email", "Inbound Organic", "Paid Search", "Partner Referral")
 
@@ -293,24 +317,36 @@ def _seed_prospects(session, org: Organization) -> None:
     )
 
 
-def seed_commercial_demo() -> dict[str, str]:
+def seed_commercial_demo(
+    org_id: str | None = None,
+    *,
+    seed_globex: bool = True,
+) -> dict[str, str]:
+    primary_org_id = resolve_org_id(org_id)
     reset_engine()
     init_db()
     session = get_session_factory()()
     try:
-        acme = seed_organization(session, ACME_ORG_ID, ACME_NAME, ACME_API_KEY, "scale")
-        globex = seed_organization(session, GLOBEX_ORG_ID, GLOBEX_NAME, GLOBEX_API_KEY, "growth")
+        acme = seed_organization(session, primary_org_id, ACME_NAME, ACME_API_KEY, "scale")
         _seed_acme_accounts(session, acme)
-        _seed_globex(session, globex)
         _seed_prospects(session, acme)
-        session.commit()
-        LOGGER.info("Seeded %s (%s accounts) and %s", ACME_NAME, 50, GLOBEX_NAME)
-        return {
-            "acme_org_id": ACME_ORG_ID,
+        result = {
+            "acme_org_id": primary_org_id,
+            "org_id": primary_org_id,
             "acme_api_key": ACME_API_KEY,
             "globex_org_id": GLOBEX_ORG_ID,
             "globex_api_key": GLOBEX_API_KEY,
         }
+        if seed_globex:
+            globex = seed_organization(session, GLOBEX_ORG_ID, GLOBEX_NAME, GLOBEX_API_KEY, "growth")
+            _seed_globex(session, globex)
+            LOGGER.info("Seeded %s as %s (%s accounts) and %s", ACME_NAME, primary_org_id, 50, GLOBEX_NAME)
+        else:
+            result["globex_org_id"] = ""
+            result["globex_api_key"] = ""
+            LOGGER.info("Seeded %s as %s (%s accounts)", ACME_NAME, primary_org_id, 50)
+        session.commit()
+        return result
     except Exception:
         session.rollback()
         raise
@@ -320,11 +356,24 @@ def seed_commercial_demo() -> dict[str, str]:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    keys = seed_commercial_demo()
+    args = parse_args()
+    org_id = (args.org_id or os.getenv("CLERK_ORG_ID") or "").strip()
+    if not org_id:
+        LOGGER.warning("Skipping commercial seed: pass --org-id or set CLERK_ORG_ID")
+        return
+    keys = seed_commercial_demo(org_id, seed_globex=not args.skip_globex)
     print("Commercial demo seeded.")
-    print(f"  Acme SaaS     org_id={keys['acme_org_id']}  X-API-Key={keys['acme_api_key']}")
-    print(f"  Globex        org_id={keys['globex_org_id']}  X-API-Key={keys['globex_api_key']}")
+    print(f"  Primary tenant  org_id={keys['org_id']}  X-API-Key={keys['acme_api_key']}")
+    if keys.get("globex_org_id"):
+        print(f"  Globex          org_id={keys['globex_org_id']}  X-API-Key={keys['globex_api_key']}")
 
 
 if __name__ == "__main__":
     main()
+
+
+def __getattr__(name: str):
+    """Expose ACME_ORG_ID as the current CLERK_ORG_ID for tests (no hardcoded default)."""
+    if name == "ACME_ORG_ID":
+        return os.getenv("CLERK_ORG_ID", "").strip()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

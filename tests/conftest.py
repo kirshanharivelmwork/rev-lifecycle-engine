@@ -9,6 +9,7 @@ from typing import Any, Optional
 os.environ.setdefault("DISABLE_RATE_LIMIT", "1")
 os.environ.setdefault("CLERK_ISSUER", "https://clerk.test")
 os.environ.setdefault("CLERK_JWKS_URL", "https://clerk.test/.well-known/jwks.json")
+os.environ.setdefault("CLERK_ORG_ID", "org_acme")
 # Valid Fernet key used by every test unless a case monkeypatches ENCRYPTION_KEY.
 os.environ.setdefault("ENCRYPTION_KEY", "C4BK8b1E0Jd-wGAIKMFxUN55sQR_K912UqBiYcfpubI=")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")

@@ -59,7 +59,10 @@ session = get_session_factory()()
 try:
     if session.query(Organization).count() == 0:
         session.close()
-        seed_commercial_demo()
+        try:
+            seed_commercial_demo()
+        except ValueError as exc:
+            raise SystemExit(f"Empty database and no Clerk org id: {exc}") from exc
     else:
         session.close()
 except Exception:
