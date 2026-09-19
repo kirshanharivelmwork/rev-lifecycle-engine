@@ -302,6 +302,14 @@ SQLAlchemy schema: `Organization`, `CustomerAccount`, `TelemetryEvent`, `ChurnAs
 
 Cryptographic Stripe signature validation via `stripe.Webhook.construct_event()` on the raw body and `Stripe-Signature`. Invalid signatures return HTTP 400. `ALLOW_INSECURE_WEBHOOKS` is a local-only bypass when no secret is configured. Stripe and telemetry routes persist an `IngestionJob`, return **HTTP 202** with `job_id`, and run transform → XGBoost → alerts asynchronously (`src/tasks.py`, retries).
 
+Tenant integration secrets (`hubspot_access_token` / `hubspot_token`, `salesforce_access_token` / `salesforce_key`, `stripe_webhook_secret` / `stripe_secret`, `instantly_api_key`) are stored as Fernet ciphertext. Set `ENCRYPTION_KEY` to a key from `python -m src.security` (or `python bin/generate_encryption_key.py`) in `.env` and `docker-compose.yml`. On startup, `migrate_plaintext_secrets()` encrypts legacy cleartext in place. `decrypt_secret()` also accepts leftover plaintext so old rows do not crash. If you prefer a clean local SQLite file instead of migrating:
+
+```bash
+rm -f data/rev_lifecycle.db
+python -m src.security   # paste into .env as ENCRYPTION_KEY
+python -m src.seed_commercial_demo
+```
+
 ### 6. Retention Action Engine & Alert Cooldown
 
 Dispatcher fires when \(p \ge 0.65\). Default **14-day** alert suppression (`last_contacted_at`, `suppressed_until`, tenant-configurable 7–30 days) prevents CSM fatigue; remaining Medium risk logs `status="suppressed_cooldown"` and skips outbound APIs. Critical override when \(p > 0.85\). Live Slack Block Kit alerts and hyper-personalized Resend emails (or `simulated` when credentials are absent).
@@ -322,7 +330,7 @@ docker compose up --build
 
 - **app** (`Dockerfile`, `python:3.10-slim`, `build-essential` + `libgomp1`): seeds the demo book at image build, then `bin/start.sh` launches Uvicorn `:8000` and Streamlit `:8501` with SIGTERM/SIGINT cleanup.
 - **postgres** (`postgres:15-alpine`): persistent `pgdata` volume and `pg_isready` healthcheck.
-- Runtime env: `DATABASE_URL`, `STRIPE_WEBHOOK_SECRET`, `SLACK_WEBHOOK_URL`, `RESEND_API_KEY`.
+- Runtime env: `DATABASE_URL`, `ENCRYPTION_KEY`, `STRIPE_WEBHOOK_SECRET`, `SLACK_WEBHOOK_URL`, `RESEND_API_KEY`.
 
 Local without Docker: `uvicorn src.api:app --host 0.0.0.0 --port 8000` and `streamlit run app/dashboard.py --server.port 8501`.
 

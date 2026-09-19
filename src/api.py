@@ -16,7 +16,7 @@ if __package__ in {None, ""}:
 
 import pandas as pd
 import requests
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from slowapi.errors import RateLimitExceeded
@@ -26,7 +26,9 @@ from src.auth import AuthUser, get_current_org, require_admin_role
 from src.billing import INGEST_LIMIT, SubscriptionInactive, billing_json_response, limiter
 from src.churn_model import ChurnScoringEngine, load_or_train
 from src.database import init_db
+from src.integrations.backfill import run_historical_backfill
 from src.models_db import Organization
+from src.security import decrypt_secret
 from src.paths import (
     ACQUISITION_CHANNELS,
     AT_RISK_THRESHOLD,
@@ -86,6 +88,40 @@ class PredictionResponse(BaseModel):
     risk_drivers: str
     model_version: str
     org_id: Optional[str] = None
+
+
+class OrganizationSecrets(BaseModel):
+    """Plaintext tenant secrets. Persist via EncryptedText columns on Organization."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    hubspot_token: Optional[str] = Field(default=None, alias="hubspot_access_token")
+    salesforce_key: Optional[str] = Field(default=None, alias="salesforce_access_token")
+    stripe_secret: Optional[str] = Field(default=None, alias="stripe_webhook_secret")
+    instantly_api_key: Optional[str] = None
+
+
+def apply_organization_secrets(org: Organization, secrets: OrganizationSecrets) -> Organization:
+    """Write plaintext secrets onto the org; SQLAlchemy encrypts on flush."""
+    if secrets.hubspot_token:
+        org.hubspot_access_token = secrets.hubspot_token
+    if secrets.salesforce_key:
+        org.salesforce_access_token = secrets.salesforce_key
+    if secrets.stripe_secret:
+        org.stripe_webhook_secret = secrets.stripe_secret
+    if secrets.instantly_api_key:
+        org.instantly_api_key = secrets.instantly_api_key
+    return org
+
+
+def plaintext_organization_secrets(org: Organization) -> OrganizationSecrets:
+    """Decode secrets for in-process use (no-op when already decrypted by ORM)."""
+    return OrganizationSecrets(
+        hubspot_token=decrypt_secret(org.hubspot_access_token),
+        salesforce_key=decrypt_secret(org.salesforce_access_token),
+        stripe_secret=decrypt_secret(org.stripe_webhook_secret),
+        instantly_api_key=decrypt_secret(org.instantly_api_key),
+    )
 
 
 class DispatchRequest(CustomerTelemetry):
@@ -162,6 +198,53 @@ app.include_router(webhooks.router, prefix="/api/v1")
 app.include_router(customers.router, prefix="/api/v1")
 app.include_router(billing.router, prefix="/api/v1")
 app.include_router(billing.router, prefix="/v1")
+
+
+class HistoricalBackfillRequest(BaseModel):
+    stripe_api_key: Optional[str] = None
+    segment_access_token: Optional[str] = None
+    posthog_api_key: Optional[str] = None
+    posthog_host: Optional[str] = None
+    posthog_project_id: Optional[str] = None
+
+
+class HistoricalBackfillResponse(BaseModel):
+    accepted: bool
+    org_id: str
+    status: str
+    source: str = "historical_backfill"
+
+
+@app.post("/v1/backfill", response_model=HistoricalBackfillResponse)
+@app.post("/api/v1/backfill", response_model=HistoricalBackfillResponse)
+def trigger_historical_backfill(
+    payload: HistoricalBackfillRequest,
+    background: BackgroundTasks,
+    _admin: AuthUser = Depends(require_admin_role),
+    org: Organization = Depends(get_current_org),
+) -> HistoricalBackfillResponse:
+    stripe_key = (
+        (payload.stripe_api_key or "").strip()
+        or os.getenv("STRIPE_SECRET_KEY")
+        or os.getenv("STRIPE_API_KEY")
+        or ""
+    )
+    if not stripe_key:
+        raise HTTPException(status_code=400, detail="stripe_api_key is required to hydrate billing history")
+    background.add_task(
+        run_historical_backfill,
+        org.org_id,
+        stripe_key,
+        segment_access_token=payload.segment_access_token,
+        posthog_api_key=payload.posthog_api_key,
+        posthog_host=payload.posthog_host,
+        posthog_project_id=payload.posthog_project_id,
+    )
+    return HistoricalBackfillResponse(
+        accepted=True,
+        org_id=org.org_id,
+        status="queued",
+    )
 
 
 def score_payload(

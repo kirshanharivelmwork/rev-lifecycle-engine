@@ -21,6 +21,7 @@ from src.routers.ingestion import (
     extract_event_id,
     verify_stripe_signature,
 )
+from src.security import decrypt_secret
 
 router = APIRouter(tags=["webhooks"])
 
@@ -194,7 +195,7 @@ async def stripe_webhook(
         enforce_billing=False,
         stripe_customer_id=_stripe_customer_hint(preview),
     )
-    secret = org.stripe_webhook_secret or os.getenv("STRIPE_WEBHOOK_SECRET")
+    secret = decrypt_secret(org.stripe_webhook_secret) or os.getenv("STRIPE_WEBHOOK_SECRET")
     event = verify_stripe_signature(raw, stripe_signature, secret)
     event_id = extract_event_id(event, "stripe")
     if not claim_idempotent_event(db, org.org_id, event_id, "stripe"):

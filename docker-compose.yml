@@ -12,7 +12,7 @@ services:
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
-      ALLOW_INSECURE_WEBHOOKS: ${ALLOW_INSECURE_WEBHOOKS:-0}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy

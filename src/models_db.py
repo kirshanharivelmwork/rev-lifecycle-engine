@@ -7,10 +7,11 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, synonym
 from sqlalchemy.types import JSON
 
 from src.paths import DEFAULT_COOLDOWN_DAYS
+from src.security import EncryptedText
 
 
 def utcnow() -> datetime:
@@ -34,17 +35,21 @@ class Organization(Base):
     plan_tier: Mapped[str] = mapped_column(String(32), default="growth", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     slack_webhook_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    stripe_webhook_secret: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    stripe_webhook_secret: Mapped[Optional[str]] = mapped_column(EncryptedText, nullable=True)
     resend_api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     alert_cooldown_days: Mapped[int] = mapped_column(Integer, default=DEFAULT_COOLDOWN_DAYS, nullable=False)
     hitl_mrr_threshold: Mapped[float] = mapped_column(Float, default=1000.0, nullable=False)
     subscription_status: Mapped[str] = mapped_column(String(24), default="active", nullable=False)
     stripe_customer_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
-    hubspot_access_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    salesforce_access_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    hubspot_access_token: Mapped[Optional[str]] = mapped_column(EncryptedText, nullable=True)
+    salesforce_access_token: Mapped[Optional[str]] = mapped_column(EncryptedText, nullable=True)
     salesforce_instance_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     apollo_api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    instantly_api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    instantly_api_key: Mapped[Optional[str]] = mapped_column(EncryptedText, nullable=True)
+    # Audit aliases for the same ciphertext columns (plaintext in memory).
+    hubspot_token = synonym("hubspot_access_token")
+    salesforce_key = synonym("salesforce_access_token")
+    stripe_secret = synonym("stripe_webhook_secret")
 
     accounts: Mapped[list["CustomerAccount"]] = relationship(back_populates="organization")
 
@@ -152,6 +157,7 @@ class IngestionJob(Base):
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    next_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
 
 
 class InterventionOutcome(Base):

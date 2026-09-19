@@ -8,6 +8,8 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
+from sqlalchemy import text
+
 from src.database import get_session_factory, init_db, reset_engine
 from src.dispatcher import approve_pending_dispatch, dismiss_false_positive, evaluate_and_trigger_actions
 from src.feature_builder import build_feature_row
@@ -230,13 +232,31 @@ def test_tenant_settings_persist_on_organization(enterprise_db) -> None:
     org.stripe_webhook_secret = "whsec_rotated"
     org.slack_webhook_url = "https://hooks.slack.com/services/T/B/demo"
     org.resend_api_key = "re_test_key"
+    org.hubspot_token = "pat-hubspot"
+    org.salesforce_key = "sf-access"
+    org.instantly_api_key = "inst_live"
     org.alert_cooldown_days = 21
     org.hitl_mrr_threshold = 2500.0
     session.commit()
     session.expire_all()
     reloaded = session.get(Organization, ACME_ORG_ID)
     assert reloaded.stripe_webhook_secret == "whsec_rotated"
+    assert reloaded.stripe_secret == "whsec_rotated"
     assert reloaded.slack_webhook_url.endswith("/demo")
     assert reloaded.resend_api_key == "re_test_key"
+    assert reloaded.hubspot_token == "pat-hubspot"
+    assert reloaded.salesforce_key == "sf-access"
+    assert reloaded.instantly_api_key == "inst_live"
     assert reloaded.alert_cooldown_days == 21
     assert reloaded.hitl_mrr_threshold == pytest.approx(2500.0)
+    stored = session.execute(
+        text(
+            "SELECT hubspot_access_token, salesforce_access_token, "
+            "stripe_webhook_secret, instantly_api_key FROM organizations WHERE org_id = :oid"
+        ),
+        {"oid": ACME_ORG_ID},
+    ).mappings().one()
+    assert stored["hubspot_access_token"] != "pat-hubspot"
+    assert stored["salesforce_access_token"] != "sf-access"
+    assert stored["stripe_webhook_secret"] != "whsec_rotated"
+    assert stored["instantly_api_key"] != "inst_live"

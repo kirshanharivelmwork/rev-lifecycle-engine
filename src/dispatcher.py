@@ -285,7 +285,7 @@ def _fire_channels(
         if org.hubspot_access_token or org.salesforce_access_token:
             from src.integrations.crm import enqueue_crm_sync
 
-            enqueue_crm_sync(org, account, scored["probability"])
+            enqueue_crm_sync(org, account, scored["probability"], session=session)
     return actions
 
 
@@ -487,3 +487,14 @@ def dismiss_false_positive(
     finally:
         if owns_session:
             session.close()
+
+
+def run_dispatcher_cron(
+    session: Optional[Any] = None,
+    now=None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Periodic dispatcher sweep: resume CRM sync jobs after Retry-After windows."""
+    from src.integrations.crm import process_due_crm_sync_jobs
+
+    return process_due_crm_sync_jobs(session=session, now=now, limit=limit)

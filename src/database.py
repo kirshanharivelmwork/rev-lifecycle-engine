@@ -18,6 +18,12 @@ from sqlalchemy.pool import StaticPool
 from src.models_db import Base
 from src.paths import DEFAULT_DATABASE_URL, SQLITE_DB_PATH
 from src.rls import apply_postgres_rls, register_orm_rls_listener, register_pool_rls_reset, resolve_org_id_from_request, set_tenant_context, clear_tenant_context
+from src.security import (
+    ORGANIZATION_SECRET_COLUMNS,
+    encrypt_secret,
+    looks_like_fernet_token,
+    EncryptionKeyMissing,
+)
 
 _engine: Engine | None = None
 _SessionFactory: sessionmaker[Session] | None = None
@@ -118,6 +124,52 @@ def migrate_schema(engine: Engine) -> None:
     _ensure_column(engine, "customer_accounts", "contract_renewal_at", "contract_renewal_at DATETIME")
     _ensure_column(engine, "customer_accounts", "approval_status", "approval_status VARCHAR(32) DEFAULT 'none'")
     _ensure_column(engine, "customer_accounts", "crm_account_id", "crm_account_id VARCHAR(128)")
+    _ensure_column(engine, "ingestion_jobs", "next_attempt_at", "next_attempt_at DATETIME")
+    migrate_plaintext_secrets(engine)
+
+
+def migrate_plaintext_secrets(engine: Engine) -> None:
+    """Encrypt legacy plaintext tenant secrets in place.
+
+    Fernet decrypt already treats invalid tokens as plaintext, so unread rows
+    will not crash the app. This pass rewrites ciphertext so SQLite/Postgres
+    files that pre-date encryption do not stay in the clear.
+
+    If ENCRYPTION_KEY is missing, skip and leave values unchanged. For a local
+    SQLite file that still holds plaintext you do not want to migrate, wipe and
+    re-seed instead::
+
+        rm -f data/rev_lifecycle.db
+        python -m src.seed_commercial_demo
+    """
+    inspector = inspect(engine)
+    if "organizations" not in inspector.get_table_names():
+        return
+    existing = {col["name"] for col in inspector.get_columns("organizations")}
+    columns = [name for name in ORGANIZATION_SECRET_COLUMNS if name in existing]
+    if not columns:
+        return
+    try:
+        encrypt_secret("probe")
+    except EncryptionKeyMissing:
+        return
+    select_sql = "SELECT org_id, " + ", ".join(columns) + " FROM organizations"
+    with engine.begin() as conn:
+        rows = conn.execute(text(select_sql)).mappings().all()
+        for row in rows:
+            updates: dict[str, str] = {}
+            for col in columns:
+                value = row.get(col)
+                if not value or looks_like_fernet_token(str(value)):
+                    continue
+                updates[col] = encrypt_secret(str(value))
+            if not updates:
+                continue
+            assignments = ", ".join(f"{col} = :{col}" for col in updates)
+            conn.execute(
+                text(f"UPDATE organizations SET {assignments} WHERE org_id = :org_id"),
+                {**updates, "org_id": row["org_id"]},
+            )
 
 
 def init_db() -> Engine:

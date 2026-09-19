@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from src.conversion_model import score_intent_signals
 from src.dead_letter import record_dead_letter
 from src.models_db import Organization, OutboundCampaign, ProspectLead, utcnow
+from src.security import decrypt_secret
 
 LOGGER = logging.getLogger(__name__)
 APOLLO_SEARCH_URL = "https://api.apollo.io/api/v1/mixed_people/search"
@@ -244,7 +245,8 @@ async def push_to_instantly(
             return {"ok": False, "error": "lead_not_found"}
         org = session.get(Organization, lead.org_id)
         org_id = lead.org_id
-        if org is None or not org.instantly_api_key:
+        instantly_key = decrypt_secret(org.instantly_api_key) if org else None
+        if org is None or not instantly_key:
             return {"ok": False, "error": "missing_instantly_api_key"}
         campaign_id = campaign_id or os.getenv("INSTANTLY_CAMPAIGN_ID") or "default"
         icebreaker = await generate_icebreaker(lead.company_name, lead.intent_signals)
@@ -268,7 +270,7 @@ async def push_to_instantly(
             body["custom_icebreaker"] = icebreaker
             body["custom_variables"] = {"custom_icebreaker": icebreaker}
         headers = {
-            "Authorization": f"Bearer {org.instantly_api_key}",
+            "Authorization": f"Bearer {instantly_key}",
             "Content-Type": "application/json",
         }
         for attempt in range(1, max_attempts + 1):
