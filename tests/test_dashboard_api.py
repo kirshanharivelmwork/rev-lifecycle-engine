@@ -75,3 +75,42 @@ def test_settings_masks_secrets_and_patch_updates_policy(dashboard_client: TestC
 def test_command_center_requires_bearer_token(dashboard_client: TestClient) -> None:
     response = dashboard_client.get("/api/v1/command-center", headers={"Authorization": "Bearer not-a-jwt"})
     assert response.status_code == 401
+
+
+def test_acquisition_lists_prospects_and_run_queues(dashboard_client: TestClient, monkeypatch) -> None:
+    listed = dashboard_client.get("/api/v1/acquisition")
+    assert listed.status_code == 200, listed.text
+    body = listed.json()
+    assert body["prospect_count"] >= 4
+    assert body["high_intent_count"] >= 2
+    assert "uncontacted" in body["sequence_status"]
+    emails = {row["email"] for row in body["prospects"]}
+    assert "priya.shah@northwind-analytics.example" in emails
+
+    calls = []
+
+    def fake_delay(org_id, search_params=None, campaign_id=None):
+        calls.append({"org_id": org_id, "search_params": search_params, "campaign_id": campaign_id})
+        return {"ok": True}
+
+    monkeypatch.setattr("src.routers.dashboard.trigger_outbound_engine.delay", fake_delay)
+    queued = dashboard_client.post("/api/v1/acquisition/run", json={})
+    assert queued.status_code == 200, queued.text
+    assert queued.json()["accepted"] is True
+    assert queued.json()["status"] == "queued"
+    assert calls[0]["org_id"] == ACME_ORG_ID
+
+
+def test_member_cannot_approve_or_patch_settings(dashboard_client: TestClient) -> None:
+    member = clerk_auth_headers(org_id=ACME_ORG_ID, role="Member")
+    listed = dashboard_client.get("/api/v1/staging")
+    assert listed.status_code == 200
+    pending = listed.json()["pending"]
+    assert pending
+    account_id = pending[0]["account_id"]
+    approve = dashboard_client.post(f"/api/v1/staging/{account_id}/approve", headers=member)
+    dismiss = dashboard_client.post(f"/api/v1/staging/{account_id}/dismiss", headers=member)
+    patch = dashboard_client.patch("/api/v1/settings", json={"alert_cooldown_days": 18}, headers=member)
+    assert approve.status_code == 403
+    assert dismiss.status_code == 403
+    assert patch.status_code == 403

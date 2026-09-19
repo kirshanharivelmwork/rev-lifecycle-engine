@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useAuthedFetch } from "@/hooks/use-authed-fetch";
-import type { SettingsPayload } from "@/lib/types";
+import type { BackfillResponse, SettingsPayload } from "@/lib/types";
 
 export function useTenantSettings() {
   const { request, isLoaded, isSignedIn } = useAuthedFetch();
@@ -11,22 +11,29 @@ export function useTenantSettings() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [backfilling, setBackfilling] = useState(false);
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (options?: { silent?: boolean }) => {
     if (!isLoaded || !isSignedIn) {
       setLoading(false);
-      return;
+      return null;
     }
-    setLoading(true);
+    if (!options?.silent) {
+      setLoading(true);
+    }
     setError(null);
     try {
       const payload = await request<SettingsPayload>("/api/v1/settings");
       setData(payload);
+      return payload;
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "Failed to load settings");
       setData(null);
+      return null;
     } finally {
-      setLoading(false);
+      if (!options?.silent) {
+        setLoading(false);
+      }
     }
   }, [isLoaded, isSignedIn, request]);
 
@@ -56,5 +63,27 @@ export function useTenantSettings() {
     [request],
   );
 
-  return { data, error, loading, saving, isLoaded, isSignedIn, reload, save };
+  const runBackfill = useCallback(
+    async (stripeApiKey: string) => {
+      setBackfilling(true);
+      setError(null);
+      try {
+        const payload = await request<BackfillResponse>("/api/v1/backfill", {
+          method: "POST",
+          body: JSON.stringify({ stripe_api_key: stripeApiKey }),
+        });
+        await reload({ silent: true });
+        return payload;
+      } catch (exc) {
+        const message = exc instanceof Error ? exc.message : "Failed to start historical backfill";
+        setError(message);
+        throw exc;
+      } finally {
+        setBackfilling(false);
+      }
+    },
+    [reload, request],
+  );
+
+  return { data, error, loading, saving, backfilling, isLoaded, isSignedIn, reload, save, runBackfill };
 }

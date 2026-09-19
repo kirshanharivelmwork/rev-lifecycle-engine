@@ -119,6 +119,37 @@ def test_stripe_checkout_completed_activates_subscription(webhook_db) -> None:
     assert org.stripe_customer_id == "cus_acme_billing"
 
 
+def test_stripe_checkout_activates_before_worker_runs(webhook_db, monkeypatch) -> None:
+    session = webhook_db
+    org = session.get(Organization, ACME_ORG_ID)
+    org.subscription_status = "incomplete"
+    session.commit()
+    monkeypatch.setattr("src.routers.ingestion.process_ingestion_job.delay", lambda *_a, **_k: None)
+    from src.api import app
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/webhooks/stripe",
+            json={
+                "id": "evt_checkout_immediate",
+                "type": "checkout.session.completed",
+                "data": {
+                    "object": {
+                        "id": "cs_immediate",
+                        "customer": "cus_immediate",
+                        "client_reference_id": ACME_ORG_ID,
+                        "metadata": {"org_id": ACME_ORG_ID},
+                    }
+                },
+            },
+        )
+    assert response.status_code == 202, response.text
+    session.expire_all()
+    org = session.get(Organization, ACME_ORG_ID)
+    assert org.subscription_status == "active"
+    assert org.stripe_customer_id == "cus_immediate"
+
+
 def test_stripe_invoice_failed_marks_past_due_by_customer_id(webhook_db) -> None:
     session = webhook_db
     org = session.get(Organization, ACME_ORG_ID)

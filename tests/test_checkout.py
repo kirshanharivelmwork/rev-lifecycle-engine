@@ -95,3 +95,42 @@ def test_create_checkout_session_requires_bearer(checkout_db) -> None:
     with TestClient(app) as client:
         response = client.post("/api/v1/billing/create-checkout-session")
     assert response.status_code == 401
+
+
+def test_confirm_checkout_session_activates_paid_org(checkout_db, monkeypatch) -> None:
+    session = checkout_db
+    org = Organization(
+        org_id="org_checkout_return",
+        name="Checkout Return",
+        api_key="hashed-checkout-return",
+        plan_tier="growth",
+        subscription_status="incomplete",
+    )
+    session.add(org)
+    session.commit()
+
+    def fake_retrieve(_session_id):
+        return {
+            "id": "cs_paid_return",
+            "status": "complete",
+            "payment_status": "paid",
+            "customer": "cus_new_paid",
+            "client_reference_id": "org_checkout_return",
+            "metadata": {"org_id": "org_checkout_return"},
+        }
+
+    monkeypatch.setattr("stripe.checkout.Session.retrieve", fake_retrieve)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/billing/confirm-checkout",
+            json={"session_id": "cs_paid_return"},
+            headers=clerk_auth_headers(org_id="org_checkout_return", role="Admin"),
+        )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["activated"] is True
+    assert body["subscription_status"] == "active"
+    session.expire_all()
+    refreshed = session.get(Organization, "org_checkout_return")
+    assert refreshed.subscription_status == "active"
+    assert refreshed.stripe_customer_id == "cus_new_paid"

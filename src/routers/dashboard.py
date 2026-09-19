@@ -13,9 +13,20 @@ from src.audit import update_tenant_policy
 from src.auth import AuthUser, get_current_org, get_current_user, require_admin_role
 from src.database import get_db
 from src.dispatcher import approve_pending_dispatch, dismiss_false_positive
-from src.models_db import ChurnAssessment, CustomerAccount, DispatchedAction, Organization, SystemAuditLog, utcnow
+from src.conversion_model import is_high_intent
+from src.models_db import (
+    ChurnAssessment,
+    CustomerAccount,
+    DispatchedAction,
+    Organization,
+    OutboundCampaign,
+    ProspectLead,
+    SystemAuditLog,
+    utcnow,
+)
 from src.outcome_tracker import audit_intervention_outcomes
 from src.paths import AT_RISK_THRESHOLD, HITL_MRR_THRESHOLD, INTERVENTION_SUCCESS_RATE, MODEL_VERSION
+from src.tasks import trigger_outbound_engine
 
 router = APIRouter(tags=["dashboard"])
 
@@ -44,6 +55,11 @@ class TenantSettingsUpdate(BaseModel):
     salesforce_instance_url: Optional[str] = None
     apollo_api_key: Optional[str] = None
     instantly_api_key: Optional[str] = None
+
+
+class OutboundRunRequest(BaseModel):
+    search_params: Optional[dict[str, Any]] = None
+    campaign_id: Optional[str] = None
 
 
 def _latest_book(session: Session, org_id: str) -> list[dict[str, Any]]:
@@ -234,8 +250,9 @@ def get_tenant_settings(
         .limit(12)
         .all()
     )
+    book = _latest_book(db, org.org_id)
     return {
-        "tenant": _tenant_payload(org),
+        "tenant": {**_tenant_payload(org), "subscriber_count": len(book)},
         "integrations": _integration_flags(org),
         "salesforce_instance_url": org.salesforce_instance_url,
         "audit_log": [
@@ -293,3 +310,75 @@ def get_tenant(
     org: Organization = Depends(get_current_org),
 ) -> dict[str, Any]:
     return _tenant_payload(org)
+
+
+def _latest_campaign_by_lead(session: Session, org_id: str) -> dict[str, OutboundCampaign]:
+    campaigns = (
+        session.query(OutboundCampaign)
+        .filter(OutboundCampaign.org_id == org_id)
+        .order_by(OutboundCampaign.created_at.desc())
+        .all()
+    )
+    latest: dict[str, OutboundCampaign] = {}
+    for campaign in campaigns:
+        latest.setdefault(campaign.prospect_lead_id, campaign)
+    return latest
+
+
+@router.get("/acquisition")
+def get_acquisition(
+    org: Organization = Depends(get_current_org),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    leads = (
+        db.query(ProspectLead)
+        .filter(ProspectLead.org_id == org.org_id)
+        .order_by(ProspectLead.conversion_score.desc(), ProspectLead.updated_at.desc())
+        .all()
+    )
+    campaigns = _latest_campaign_by_lead(db, org.org_id)
+    status_counts: dict[str, int] = {}
+    prospects: list[dict[str, Any]] = []
+    high_intent = 0
+    for lead in leads:
+        campaign = campaigns.get(lead.id)
+        status_counts[lead.status] = status_counts.get(lead.status, 0) + 1
+        if is_high_intent(lead.conversion_score):
+            high_intent += 1
+        prospects.append(
+            {
+                "id": lead.id,
+                "company_name": lead.company_name,
+                "decision_maker_name": lead.decision_maker_name,
+                "email": lead.email,
+                "linkedin_url": lead.linkedin_url,
+                "conversion_score": float(lead.conversion_score or 0.0),
+                "high_intent": is_high_intent(lead.conversion_score),
+                "status": lead.status,
+                "sequence_status": campaign.status if campaign else lead.status,
+                "campaign_id": campaign.campaign_id if campaign else None,
+                "vendor": campaign.vendor if campaign else None,
+            }
+        )
+    return {
+        "tenant": {**_tenant_payload(org), "subscriber_count": len(_latest_book(db, org.org_id))},
+        "high_intent_count": high_intent,
+        "prospect_count": len(prospects),
+        "sequence_status": status_counts,
+        "prospects": prospects,
+    }
+
+
+@router.post("/acquisition/run")
+def run_acquisition_outbound(
+    payload: OutboundRunRequest,
+    org: Organization = Depends(get_current_org),
+    _user: AuthUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    trigger_outbound_engine.delay(org.org_id, payload.search_params, payload.campaign_id)
+    return {
+        "accepted": True,
+        "org_id": org.org_id,
+        "status": "queued",
+        "source": "outbound_engine",
+    }

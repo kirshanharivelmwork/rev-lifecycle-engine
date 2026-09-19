@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from src.billing import INGEST_LIMIT, limiter
 from src.database import get_db
 from src.models_db import OutboundCampaign, ProspectLead, utcnow
+from src.routers.account_ops import apply_org_billing_from_stripe
 from src.routers.ingestion import (
     _enqueue_job,
     _resolve_org,
@@ -182,7 +183,9 @@ async def stripe_webhook(
     try:
         preview = json.loads(raw.decode("utf-8"))
         obj = (preview.get("data") or {}).get("object") or {}
-        metadata_hint = obj.get("metadata") or preview.get("metadata") or {}
+        metadata_hint = dict(obj.get("metadata") or preview.get("metadata") or {})
+        if obj.get("client_reference_id") and not metadata_hint.get("org_id"):
+            metadata_hint["org_id"] = obj.get("client_reference_id")
     except Exception:
         preview = {}
         metadata_hint = {}
@@ -196,6 +199,8 @@ async def stripe_webhook(
     )
     secret = decrypt_secret(org.stripe_webhook_secret) or os.getenv("STRIPE_WEBHOOK_SECRET")
     event = verify_stripe_signature(raw, stripe_signature, secret)
+    # Activate billing in-request so Checkout → dashboard never waits on Celery.
+    apply_org_billing_from_stripe(db, event, org)
     event_id = extract_event_id(event, "stripe")
     if not claim_idempotent_event(db, org.org_id, event_id, "stripe"):
         return JSONResponse(

@@ -82,7 +82,11 @@ def apply_org_billing_from_stripe(
     if isinstance(customer, dict):
         customer = customer.get("id")
     customer_id = str(customer) if customer else None
+    metadata = obj.get("metadata") or payload.get("metadata") or {}
+    hinted_org_id = metadata.get("org_id") or obj.get("client_reference_id")
     target = org
+    if target is None and hinted_org_id:
+        target = db.query(Organization).filter(Organization.org_id == str(hinted_org_id)).one_or_none()
     if target is None and customer_id:
         target = (
             db.query(Organization)

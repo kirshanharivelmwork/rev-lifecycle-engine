@@ -29,9 +29,9 @@ export type CommandCenterPayload = {
   at_risk_book: {
     account_id: string;
     customer_id: string;
-    channel: string;
     mrr: number;
     arr: number;
+    channel: string;
     contract_type: string;
     churn_probability: number;
     risk_tier: "Low" | "Medium" | "Critical";
@@ -73,4 +73,40 @@ export type SettingsPayload = {
     old: unknown;
     new: unknown;
   }[];
+};
+
+export type AcquisitionProspect = {
+  id: string;
+  company_name: string;
+  decision_maker_name: string;
+  email: string;
+  linkedin_url: string | null;
+  conversion_score: number;
+  high_intent: boolean;
+  status: string;
+  sequence_status: string;
+  campaign_id: string | null;
+  vendor: string | null;
+};
+
+export type AcquisitionPayload = {
+  tenant: TenantSummary;
+  high_intent_count: number;
+  prospect_count: number;
+  sequence_status: Record<string, number>;
+  prospects: AcquisitionProspect[];
+};
+
+export type BackfillResponse = {
+  accepted: boolean;
+  org_id: string;
+  status: string;
+  source?: string;
+};
+
+export type CheckoutConfirmResponse = {
+  org_id: string;
+  session_id: string;
+  subscription_status: string;
+  activated: boolean;
 };

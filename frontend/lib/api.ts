@@ -16,6 +16,8 @@ export async function apiFetch<T>(path: string, token: string, init?: RequestIni
       const body = await response.json();
       if (typeof body?.detail === "string") {
         detail = body.detail;
+      } else if (typeof body?.error === "string") {
+        detail = body.error;
       } else if (body?.detail) {
         detail = JSON.stringify(body.detail);
       }

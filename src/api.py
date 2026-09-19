@@ -234,6 +234,21 @@ def create_checkout_session(
     return billing.create_stripe_checkout_session(user, db)
 
 
+class ConfirmCheckoutRequest(BaseModel):
+    session_id: str
+
+
+@app.post("/api/v1/billing/confirm-checkout")
+@app.post("/v1/billing/confirm-checkout")
+def confirm_checkout_session(
+    payload: ConfirmCheckoutRequest,
+    user: AuthUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Mark the tenant active after Stripe Checkout redirects to /?session_id=..."""
+    return billing.confirm_stripe_checkout_session(user, db, payload.session_id)
+
+
 class HistoricalBackfillRequest(BaseModel):
     stripe_api_key: Optional[str] = None
     segment_access_token: Optional[str] = None

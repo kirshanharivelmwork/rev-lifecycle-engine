@@ -225,3 +225,15 @@ async def run_daily_outbound_engine(
     finally:
         if owns_session:
             session.close()
+
+
+@celery_app.task(name="src.tasks.trigger_outbound_engine")
+def trigger_outbound_engine(
+    org_id: str,
+    search_params: Optional[dict[str, Any]] = None,
+    campaign_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Queue Apollo ingest + Instantly push for the Front Door."""
+    return asyncio.run(
+        run_daily_outbound_engine(org_id, search_params=search_params, campaign_id=campaign_id)
+    )

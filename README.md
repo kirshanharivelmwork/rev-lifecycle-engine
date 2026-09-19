@@ -2,9 +2,11 @@
 
 [![Live Command Center](https://img.shields.io/badge/Live-Command%20Center-0ea5e9)](https://rev-lifecycle-engine-production.up.railway.app)
 [![Stripe ingestion](https://img.shields.io/badge/Stripe-webhook%20%2Fapi%2Fv1%2Fwebhooks%2Fstripe-635bff)](https://rev-lifecycle-engine-production.up.railway.app/api/v1/webhooks/stripe)
-[![Test status](https://img.shields.io/badge/tests-18%20passing-22c55e)](#testing)
+[![Test status](https://img.shields.io/badge/tests-97%20passing-22c55e)](#testing)
 
-**Production (Railway):** [Executive Command Center](https://rev-lifecycle-engine-production.up.railway.app) · Stripe ingest [`POST /api/v1/webhooks/stripe`](https://rev-lifecycle-engine-production.up.railway.app/api/v1/webhooks/stripe) · **18** unit & integration tests passing
+**Production (Railway):** [Executive Command Center](https://rev-lifecycle-engine-production.up.railway.app) · Stripe ingest [`POST /api/v1/webhooks/stripe`](https://rev-lifecycle-engine-production.up.railway.app/api/v1/webhooks/stripe) · **97** unit & integration tests passing
+
+**Production stack:** FastAPI + Next.js + Clerk JWT. Railway serves the Next.js UI on `$PORT` (typically 3000) and FastAPI internally on port 8000 (`bin/start.sh`). Authenticated product APIs expect `Authorization: Bearer <Clerk JWT>`. Streamlit (`app/dashboard.py`) remains in the repo as a legacy local analytics notebook UI — it is **not** the production product.
 
 A production-style analytics system for B2B SaaS: **buy the right customers at the Front Door, and stop losing them at the Back Door.**
 
@@ -106,7 +108,7 @@ flowchart LR
     G --> H[data/processed/churn_risk_alerts.csv]
     G --> K[models/churn_engine.pkl]
     K --> L[src/api.py FastAPI]
-    K --> M[app/dashboard.py Streamlit]
+    K --> M[frontend Next.js + Clerk]
     E --> M
     H --> M
     L --> N[POST /v1/predict]
@@ -117,7 +119,8 @@ flowchart LR
 ```
 
 ```
-app/dashboard.py          Streamlit executive revenue command center
+frontend/                 Production UI (Next.js App Router + Clerk)
+app/dashboard.py          Legacy Streamlit analytics UI (not served in production)
 src/generate_data.py      Front Door + Back Door simulator (CLI)
 src/data_pipeline.py      Schema validation, merge, LTV/CAC, encoding
 src/stats_engine.py       Welch t-test + chi-square + executive narrative
@@ -215,8 +218,9 @@ Early-warning output: `data/processed/churn_risk_alerts.csv` (active customers w
 
 ```
 .
+├── frontend/               Next.js Command Center (Clerk JWT)
 ├── app/
-│   └── dashboard.py        Executive Streamlit UI
+│   └── dashboard.py        Legacy Streamlit UI (local analytics only)
 ├── data/
 │   ├── raw/                acquisition_leads.csv, user_telemetry_churn.csv
 │   └── processed/          features, alerts, dispatched_alerts_log.json
@@ -263,6 +267,10 @@ python3 -m src
 # 6. Seed commercial tenants + unit tests
 python3 -m src.seed_commercial_demo
 python3 -m pytest
+
+# 7. Production UI (Next.js) against FastAPI
+uvicorn src.api:app --host 0.0.0.0 --port 8000
+cd frontend && npm install && npm run dev
 ```
 
 Optional flags for the generator:
@@ -328,11 +336,19 @@ Self-serve **Tenant Settings & Integrations** tab stores Stripe webhook signing 
 docker compose up --build
 ```
 
-- **app** (`Dockerfile`, `python:3.10-slim`, `build-essential` + `libgomp1`): seeds the demo book at image build, then `bin/start.sh` launches Uvicorn `:8000` and Streamlit `:8501` with SIGTERM/SIGINT cleanup.
+- **app** (`Dockerfile`, `python:3.10-slim`, Node 20): seeds the demo book at image build, then `bin/start.sh` launches Uvicorn on internal `:8000` and Next.js on Railway `$PORT` (default 3000) with SIGTERM/SIGINT cleanup.
 - **postgres** (`postgres:15-alpine`): persistent `pgdata` volume and `pg_isready` healthcheck.
-- Runtime env: `DATABASE_URL`, `ENCRYPTION_KEY`, `STRIPE_WEBHOOK_SECRET`, `SLACK_WEBHOOK_URL`, `RESEND_API_KEY`.
+- **redis** (`redis:7-alpine`): Celery broker for ingestion, backfill, and outbound.
+- Runtime env: `DATABASE_URL`, `ENCRYPTION_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, `CLERK_ISSUER` / `CLERK_JWKS_URL`, `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `FRONTEND_URL`.
 
-Local without Docker: `uvicorn src.api:app --host 0.0.0.0 --port 8000` and `streamlit run app/dashboard.py --server.port 8501`.
+Local without Docker:
+
+```bash
+uvicorn src.api:app --host 0.0.0.0 --port 8000
+cd frontend && npm run dev   # http://localhost:3000, rewrites /api to FastAPI
+```
+
+Optional legacy Streamlit (not production): `streamlit run app/dashboard.py --server.port 8501`.
 
 ---
 
@@ -362,7 +378,7 @@ flowchart LR
 | Async workers | `src/tasks.py` | Webhooks persist payload, enqueue `IngestionJob`, return **HTTP 202** + `job_id`; BackgroundTasks (Celery/RQ-compatible) run transform, XGBoost, alerts with retries |
 | Cooldown engine | `src/dispatcher.py` | `last_contacted_at` / `cooldown_days` (14) / `suppressed_until`; duplicate Medium alerts log `suppressed_cooldown`. Critical (`p > 0.85`) bypasses |
 | Outcome attribution | `src/outcome_tracker.py` | 30/60/90-day Active/Churned/Downgraded audits; verified ARR saved instead of a static 35% save rate |
-| HITL dashboard | `app/dashboard.py` | Staging & Approval Queue for MRR > $1,000; Approve / Dismiss; tenant Slack URL + Stripe secret in sidebar |
+| HITL dashboard | `frontend/` | Staging & Approval Queue for high-MRR accounts; Approve / Dismiss (Admin JWT); tenant secrets in Settings |
 | Temporal features | `src/feature_builder.py` | `days_until_renewal`, `contract_renewal_urgency_ratio` |
 
 Default local DB is SQLite (`data/rev_lifecycle.db`) with `PRAGMA foreign_keys=ON`. Production: set `DATABASE_URL=postgresql+psycopg2://user:pass@host:5432/revlifecycle`.
@@ -377,7 +393,7 @@ Prints API keys for **Acme SaaS** (`org_acme`, 50 accounts) and **Globex Analyti
 
 ### Commercial API
 
-Non-webhook routes require `X-API-Key`. Webhooks resolve the tenant via `X-Org-Id`, `X-API-Key`, Segment `writeKey`, or Stripe `metadata.org_id`.
+Non-webhook product routes require a Clerk JWT (`Authorization: Bearer …`). Webhooks resolve the tenant via `X-Org-Id`, Segment `writeKey`, or Stripe `metadata.org_id` / `client_reference_id`. Seeded demo keys remain hashed on `Organization.api_key` for webhook fallback.
 
 ```bash
 # Health (public)
@@ -411,10 +427,19 @@ Automated actions fire when `churn_probability >= 0.65`:
 ```bash
 uvicorn src.api:app --reload --port 8000
 python3 -m src.seed_commercial_demo
-streamlit run app/dashboard.py
+cd frontend && npm run dev
 ```
 
-Dashboard: organization switcher, monitored ARR, ARR protected (at-risk ARR × 35% save rate), this-month intervention count, live action stream, and an interactive ROI calculator (subscription price × CS save rate).
+Dashboard: Clerk organization switcher, monitored ARR, verified ARR saved, this-month intervention count, live action stream, Front Door acquisition, and historical Stripe backfill for empty Day-1 books.
+
+### Stripe Checkout flow
+
+Self-serve Growth billing is Clerk-authenticated Stripe Checkout:
+
+1. Signed-in user opens `/pricing` and clicks **Subscribe**.
+2. Next.js calls `POST /api/v1/billing/create-checkout-session` with the Clerk JWT. FastAPI upserts an `Organization` for the Clerk `org_id` (`subscription_status=incomplete` until paid) and returns a Stripe-hosted URL (`success_url` is `/?session_id={CHECKOUT_SESSION_ID}`).
+3. After payment, Stripe sends `checkout.session.completed` to `POST /api/v1/webhooks/stripe`. The webhook **sets `subscription_status=active` in the request** (it does not wait on Celery) so the new subscriber is not billed as inactive.
+4. The app lands on `/?session_id=...`, confirms the session via `POST /api/v1/billing/confirm-checkout`, then loads the Command Center. An empty book is expected until an Admin runs **historical backfill** from Settings.
 
 ---
 
@@ -424,38 +449,41 @@ The original batch science stack (generate → pipeline → stats → model) rem
 
 | Surface | Role | Process |
 | --- | --- | --- |
-| **Executive UI** | Multi-tenant ROI command center | Streamlit on port 8501 |
+| **Executive UI** | Multi-tenant ROI command center | Next.js on `$PORT` (Clerk JWT) |
 | **Scoring + ingestion API** | Predict, Stripe/telemetry webhooks, dispatcher | Uvicorn / FastAPI on port 8000 |
 
 ```mermaid
 flowchart TB
     subgraph ops [Online path]
-      UI[Streamlit dashboard]
+      UI[Next.js Command Center]
       API[FastAPI /v1/predict]
       WH[Stripe + telemetry webhooks]
     end
     PKL[models/churn_engine.pkl]
     DB[(Tenant database)]
-    UI --> DB
+    UI --> API
     API --> PKL
     WH --> DB
     API --> DB
 ```
 
-### Launch the dashboard
+### Launch the production UI
 
 ```bash
 # from the repository root, after features have been built
 python3 -m src.churn_model    # trains + writes models/churn_engine.pkl
-streamlit run app/dashboard.py
+uvicorn src.api:app --reload --port 8000
+cd frontend && npm run dev
 ```
 
-The UI loads processed funnel features and scores every active account. It exposes:
+The Next.js UI loads the live tenant book from FastAPI. It exposes:
 
-- MRR / ARR, at-risk ARR (p > 0.65), NRR forecast, blended LTV:CAC
-- Plotly views: risk-tier distribution, CAC vs. 12-month retention by channel, inactivity × adoption heatmap
-- CSM queue with Risk Tier and Acquisition Channel filters
-- **Simulate retention impact** slider: re-scores the book after an onboarding adoption lift and reports ARR saved
+- Command Center KPIs, action stream, and at-risk book
+- Front Door acquisition table, high-intent count, and Run outbound
+- HITL staging with Admin-only Approve / Dismiss
+- Settings integrations plus Day-1 Stripe historical backfill
+
+Legacy Streamlit (`streamlit run app/dashboard.py`) still plots the offline CSV book for local science work. It is not wired into Clerk, Checkout, or Railway `$PORT`.
 
 ### Launch the API
 
@@ -539,7 +567,7 @@ macOS note: XGBoost wheels need OpenMP (`brew install libomp`). The scorer falls
 
 ## Testing
 
-`tests/test_pipeline.py` covers the four control planes; `tests/test_api.py` covers the online contract:
+`python3 -m pytest` currently runs **97** passing tests across pipeline, auth, dashboard, Checkout, webhooks, and acquisition. Representative coverage:
 
 | Test | Asserts |
 | --- | --- |
@@ -549,6 +577,11 @@ macOS note: XGBoost wheels need OpenMP (`brew install libomp`). The scorer falls
 | `test_model_inference` | New rows score to probabilities ∈ [0.0, 1.0] |
 | `test_health_ok` | `GET /health` returns HTTP 200 with status and model version |
 | `test_predict_returns_valid_payload` | `POST /v1/predict` returns HTTP 200, probability ∈ [0, 1], playbook, ARR at risk |
+| `test_create_checkout_session_returns_stripe_url` | Clerk JWT creates a Stripe Checkout session for the org |
+| `test_confirm_checkout_session_activates_paid_org` | `/?session_id=...` confirm path sets `subscription_status=active` |
+| `test_stripe_checkout_activates_before_worker_runs` | Checkout webhook activates billing without waiting on Celery |
+| `test_acquisition_lists_prospects_and_run_queues` | Front Door GET/POST APIs |
+| `test_member_cannot_approve_or_patch_settings` | Approve / Dismiss / Settings PATCH are Admin-only |
 | `test_multi_tenant_isolation` | Org A queries cannot see Org B `CustomerAccount` rows |
 | `test_stripe_webhook_ingests_customer_and_subscription` | Stripe events return 202 and upsert MRR asynchronously |
 | `test_action_dispatching_on_high_churn_accounts` | p ≥ 0.65 writes Slack + Resend `DispatchedAction` rows |

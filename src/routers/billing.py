@@ -105,3 +105,54 @@ def create_stripe_checkout_session(user: AuthUser, db: Session) -> dict[str, Any
             detail="Stripe did not return a Checkout URL",
         )
     return {"url": url, "id": session_id, "org_id": org.org_id}
+
+
+def confirm_stripe_checkout_session(user: AuthUser, db: Session, session_id: str) -> dict[str, Any]:
+    """Activate the Clerk org when Stripe Checkout reports a paid session.
+
+    Used on `/?session_id=...` so a brand-new subscriber is `active` even if the
+    webhook worker has not drained yet. Does not go through get_current_org, so
+    an `incomplete` tenant can complete onboarding without a 402.
+    """
+    session_id = (session_id or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="session_id is required")
+    org = ensure_organization_for_user(db, user)
+    secret = (os.getenv("STRIPE_SECRET_KEY") or os.getenv("STRIPE_API_KEY") or "").strip()
+    activated = org.subscription_status == "active"
+    if secret:
+        import stripe
+
+        stripe.api_key = secret
+        try:
+            session = stripe.checkout.Session.retrieve(session_id)
+        except Exception:
+            return {
+                "org_id": org.org_id,
+                "session_id": session_id,
+                "subscription_status": org.subscription_status,
+                "activated": org.subscription_status == "active",
+            }
+        payload = session.to_dict() if hasattr(session, "to_dict") else dict(session)
+        meta = payload.get("metadata") or {}
+        hinted = str(meta.get("org_id") or payload.get("client_reference_id") or "")
+        if hinted and hinted != org.org_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Checkout session does not match this organization")
+        payment_status = str(payload.get("payment_status") or "").lower()
+        session_status = str(payload.get("status") or "").lower()
+        paid = payment_status == "paid" or session_status == "complete"
+        if paid:
+            customer = payload.get("customer")
+            if isinstance(customer, dict):
+                customer = customer.get("id")
+            org.subscription_status = "active"
+            if customer:
+                org.stripe_customer_id = str(customer)
+            db.flush()
+            activated = True
+    return {
+        "org_id": org.org_id,
+        "session_id": session_id,
+        "subscription_status": org.subscription_status,
+        "activated": activated,
+    }

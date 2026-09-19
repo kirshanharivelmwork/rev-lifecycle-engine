@@ -2,11 +2,15 @@
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { useOrgRole } from "@/hooks/use-org-role";
 import { useStagingQueue } from "@/hooks/use-staging";
 import { formatUsd } from "@/lib/command-center-data";
 
+const ADMIN_REASON = "Admin access required";
+
 export function StagingQueue() {
   const { data, error, loading, approve, dismiss, pendingId } = useStagingQueue();
+  const { isAdmin } = useOrgRole();
 
   if (loading) {
     return <p className="text-sm text-muted-foreground">Loading approval queue…</p>;
@@ -26,6 +30,7 @@ export function StagingQueue() {
         <p className="mt-2 text-[0.98rem] text-muted-foreground">
           Accounts with MRR above {formatUsd(data.tenant.hitl_mrr_threshold)} wait here before Slack/Resend fire.
         </p>
+        {!isAdmin ? <p className="mt-2 text-sm text-muted-foreground">{ADMIN_REASON}</p> : null}
       </header>
 
       <section className="grid gap-4 sm:grid-cols-2">
@@ -60,20 +65,23 @@ export function StagingQueue() {
                     {formatUsd(account.mrr)} MRR · {account.risk_tier} · {account.recommended_action || "retention playbook"}
                   </p>
                 </div>
-                <div className="flex gap-2">
-                  <Button
-                    disabled={pendingId === account.account_id}
-                    onClick={() => void approve(account.account_id)}
-                  >
-                    Approve Dispatch
-                  </Button>
-                  <Button
-                    variant="outline"
-                    disabled={pendingId === account.account_id}
-                    onClick={() => void dismiss(account.account_id)}
-                  >
-                    Dismiss / False Positive
-                  </Button>
+                <div className="flex flex-col items-start gap-2 sm:items-end">
+                  <div className="flex gap-2">
+                    <Button
+                      disabled={!isAdmin || pendingId === account.account_id}
+                      onClick={() => void approve(account.account_id)}
+                    >
+                      Approve Dispatch
+                    </Button>
+                    <Button
+                      variant="outline"
+                      disabled={!isAdmin || pendingId === account.account_id}
+                      onClick={() => void dismiss(account.account_id)}
+                    >
+                      Dismiss / False Positive
+                    </Button>
+                  </div>
+                  {!isAdmin ? <p className="text-sm text-muted-foreground">{ADMIN_REASON}</p> : null}
                 </div>
               </CardContent>
             </Card>
