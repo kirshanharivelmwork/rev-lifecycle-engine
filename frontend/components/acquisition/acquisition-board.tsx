@@ -12,6 +12,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useAcquisition } from "@/hooks/use-acquisition";
+import { useOrgRole } from "@/hooks/use-org-role";
 import { cn } from "@/lib/utils";
 
 function labelStatus(value: string) {
@@ -20,6 +21,7 @@ function labelStatus(value: string) {
 
 export function AcquisitionBoard() {
   const { data, error, loading, running, runOutbound } = useAcquisition();
+  const { isAdmin } = useOrgRole();
 
   if (loading) {
     return <p className="text-sm text-muted-foreground">Loading live prospects…</p>;
@@ -46,9 +48,12 @@ export function AcquisitionBoard() {
             {data.tenant.name} · Apollo ICP ingest, conversion scoring, and Instantly sequences
           </p>
         </div>
-        <Button disabled={running} onClick={() => void runOutbound()}>
-          {running ? "Running outbound…" : "Run outbound"}
-        </Button>
+        <div className="flex flex-col items-start gap-2">
+          <Button disabled={running || !isAdmin} onClick={() => void runOutbound()}>
+            {running ? "Running outbound…" : "Run outbound"}
+          </Button>
+          {!isAdmin ? <p className="text-sm text-muted-foreground">Admin access required</p> : null}
+        </div>
       </header>
 
       <section className="grid gap-4 sm:grid-cols-3">

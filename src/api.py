@@ -40,9 +40,33 @@ from src.paths import (
     PROCESSED_DIR,
 )
 from src.retraining_pipeline import load_tenant_engine
-from src.routers import billing, customers, dashboard, ingestion, webhooks
+from src.routers import billing, customers, dashboard, ingestion, jobs, webhooks
 from src.scoring import assign_risk_tier, recommend_playbook, risk_drivers
 from src.tasks import run_historical_backfill
+from src.observability import RequestIdMiddleware, configure_logging
+from src.worker import redis_url
+
+
+def cors_allow_origins() -> list[str]:
+    """Browser origins allowed to send Clerk JWTs. Always includes FRONTEND_URL."""
+    seen: list[str] = []
+
+    def _add(raw: str) -> None:
+        origin = raw.strip().rstrip("/")
+        if origin and origin not in seen:
+            seen.append(origin)
+
+    configured = os.getenv("CORS_ORIGINS")
+    if configured is None:
+        _add("http://localhost:3000")
+    else:
+        for part in configured.split(","):
+            _add(part)
+    _add(os.getenv("FRONTEND_URL") or "")
+    _add(os.getenv("APP_URL") or "")
+    if not seen:
+        _add("http://localhost:3000")
+    return seen
 
 LOGGER = logging.getLogger(__name__)
 
@@ -183,6 +207,7 @@ def get_predict_engine(
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    configure_logging()
     init_db()
     yield
 
@@ -194,8 +219,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.state.limiter = limiter
+app.add_middleware(RequestIdMiddleware)
 app.add_middleware(SlowAPIMiddleware)
-_cors_origins = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",") if origin.strip()]
+_cors_origins = cors_allow_origins()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -222,6 +248,8 @@ app.include_router(billing.router, prefix="/api/v1")
 app.include_router(billing.router, prefix="/v1")
 app.include_router(dashboard.router, prefix="/api/v1")
 app.include_router(dashboard.router, prefix="/v1")
+app.include_router(jobs.router, prefix="/api/v1")
+app.include_router(jobs.router, prefix="/v1")
 
 
 @app.post("/api/v1/billing/create-checkout-session")
@@ -247,6 +275,16 @@ def confirm_checkout_session(
 ) -> dict[str, Any]:
     """Mark the tenant active after Stripe Checkout redirects to /?session_id=..."""
     return billing.confirm_stripe_checkout_session(user, db, payload.session_id)
+
+
+@app.post("/api/v1/billing/portal")
+@app.post("/v1/billing/portal")
+def create_billing_portal_session(
+    user: AuthUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Stripe Customer Portal for invoices, card update, and cancel."""
+    return billing.create_stripe_portal_session(user, db)
 
 
 class HistoricalBackfillRequest(BaseModel):
@@ -368,20 +406,73 @@ def _append_dispatch_log(record: dict[str, Any]) -> None:
     DISPATCH_LOG_PATH.write_text(json.dumps(history, indent=2), encoding="utf-8")
 
 
+def _probe_database() -> str:
+    try:
+        from sqlalchemy import text
+
+        from src.database import get_engine
+
+        with get_engine().connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return "ok"
+    except Exception:
+        LOGGER.exception("health database probe failed")
+        return "error"
+
+
+def _probe_redis() -> str:
+    try:
+        import redis
+
+        client = redis.from_url(redis_url(), socket_connect_timeout=0.4, socket_timeout=0.4)
+        client.ping()
+        return "ok"
+    except Exception:
+        return "degraded"
+
+
+def _probe_worker() -> str:
+    try:
+        from src.worker import celery_app
+
+        replies = celery_app.control.ping(timeout=0.4)
+        return "ok" if replies else "degraded"
+    except Exception:
+        return "degraded"
+
+
 @app.get("/health")
-def health() -> dict[str, Any]:
-    """Liveness probe: must not train or read gitignored CSVs (Railway / Docker boot)."""
+def health() -> JSONResponse:
+    """Liveness + dependency probe. Fails when the database is unreachable."""
+    db_status = _probe_database()
+    redis_status = _probe_redis()
+    worker_status = _probe_worker()
+    if db_status != "ok":
+        overall = "error"
+        code = 503
+    elif redis_status != "ok" or worker_status != "ok":
+        overall = "degraded"
+        code = 200
+    else:
+        overall = "ok"
+        code = 200
     model_name = (
         getattr(_ENGINE, "production_name_", None) if _ENGINE is not None else "not_loaded"
     )
-    return {
-        "status": "ok",
-        "model_version": _LOADED_VERSION if _ENGINE is not None else MODEL_VERSION,
-        "model_name": model_name or "not_loaded",
-        "at_risk_threshold": AT_RISK_THRESHOLD,
-        "critical_threshold": CRITICAL_THRESHOLD,
-        "auth": "Clerk JWT bearer token required on non-webhook routes; Admin role for billing and dispatcher",
-    }
+    return JSONResponse(
+        status_code=code,
+        content={
+            "status": overall,
+            "db": db_status,
+            "redis": redis_status,
+            "worker": worker_status,
+            "model_version": _LOADED_VERSION if _ENGINE is not None else MODEL_VERSION,
+            "model_name": model_name or "not_loaded",
+            "at_risk_threshold": AT_RISK_THRESHOLD,
+            "critical_threshold": CRITICAL_THRESHOLD,
+            "auth": "Clerk JWT bearer token required on non-webhook routes; Admin role for billing mutations and dispatcher",
+        },
+    )
 
 
 @app.post("/v1/predict", response_model=PredictionResponse)

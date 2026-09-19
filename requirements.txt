@@ -82,3 +82,4 @@ wrapt==2.4.1
 xgboost==2.1.4
 zipp==3.23.1
 psycopg2-binary
+alembic==1.13.3

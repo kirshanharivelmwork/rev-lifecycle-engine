@@ -91,7 +91,8 @@ def test_billing_and_dispatcher_require_admin(auth_db, processed_frame) -> None:
         dispatch_denied = client.post("/v1/dispatch-alert", json=HIGH_RISK, headers=member)
         billing_ok = client.get("/api/v1/billing", headers=admin)
         dispatch_ok = client.post("/v1/dispatch-alert", json=HIGH_RISK, headers=admin)
-    assert billing_denied.status_code == 403
+    assert billing_denied.status_code == 200
+    assert billing_denied.json()["org_id"] == ACME_ORG_ID
     assert dispatch_denied.status_code == 403
     assert billing_ok.status_code == 200, billing_ok.text
     assert billing_ok.json()["org_id"] == ACME_ORG_ID
@@ -110,5 +111,5 @@ def test_get_current_user_rejects_missing_and_accepts_member_on_predict(auth_db,
         billing_member = client.get("/v1/billing", headers=headers)
         predict_member = client.post("/v1/predict", json=HIGH_RISK, headers=headers)
     assert missing.status_code == 401
-    assert billing_member.status_code == 403
+    assert billing_member.status_code == 200
     assert predict_member.status_code == 200, predict_member.text

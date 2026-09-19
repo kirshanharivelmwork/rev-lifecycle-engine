@@ -22,13 +22,16 @@ const EMPTY_SECRETS = {
 const ADMIN_REASON = "Admin access required";
 
 export function TenantSettings() {
-  const { data, error, loading, saving, backfilling, save, runBackfill, reload } = useTenantSettings();
+  const { data, error, loading, saving, backfilling, save, runBackfill, deleteCustomer, reload } = useTenantSettings();
   const { isAdmin, isLoaded: roleLoaded } = useOrgRole();
   const [cooldown, setCooldown] = useState(14);
   const [hitl, setHitl] = useState(1000);
   const [salesforceInstance, setSalesforceInstance] = useState("");
   const [secrets, setSecrets] = useState(EMPTY_SECRETS);
   const [stripeApiKey, setStripeApiKey] = useState("");
+  const [segmentToken, setSegmentToken] = useState("");
+  const [posthogKey, setPosthogKey] = useState("");
+  const [gdprId, setGdprId] = useState("");
   const [saved, setSaved] = useState(false);
   const [scoring, setScoring] = useState(false);
   const [backfillMessage, setBackfillMessage] = useState<string | null>(null);
@@ -84,7 +87,11 @@ export function TenantSettings() {
       return;
     }
     setBackfillMessage(null);
-    await runBackfill(stripeApiKey.trim());
+    await runBackfill({
+      stripe_api_key: stripeApiKey.trim(),
+      segment_access_token: segmentToken.trim() || undefined,
+      posthog_api_key: posthogKey.trim() || undefined,
+    });
     setStripeApiKey("");
     setScoring(true);
     try {
@@ -102,6 +109,21 @@ export function TenantSettings() {
     }
   }
 
+  async function onDeleteCustomer() {
+    if (!isAdmin) {
+      return;
+    }
+    const target = gdprId.trim();
+    if (!target) {
+      return;
+    }
+    if (!window.confirm(`Permanently delete customer ${target} and related telemetry for this tenant?`)) {
+      return;
+    }
+    await deleteCustomer(target);
+    setGdprId("");
+  }
+
   const inputClass =
     "mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60";
 
@@ -115,6 +137,19 @@ export function TenantSettings() {
         </p>
         {!isAdmin ? <p className="mt-2 text-sm text-muted-foreground">{ADMIN_REASON}</p> : null}
       </header>
+
+      <Card className="rounded-2xl border-border shadow-card">
+        <CardHeader>
+          <CardTitle>First-run checklist</CardTitle>
+          <CardDescription>Compact Day-1 path for a paying design partner.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-1 text-sm text-muted-foreground">
+          <p>1. Stripe historical backfill (required for Command Center scores).</p>
+          <p>2. Optional Segment / PostHog token if you have product analytics history.</p>
+          <p>3. Slack incoming webhook and Resend API key for save motions.</p>
+          <p>4. HITL MRR floor (accounts above it wait in Staging).</p>
+        </CardContent>
+      </Card>
 
       {emptyBook ? (
         <Card className="rounded-2xl border-border shadow-card">
@@ -136,6 +171,28 @@ export function TenantSettings() {
                 disabled={inputsDisabled}
                 onChange={(event) => setStripeApiKey(event.target.value)}
                 placeholder="sk_live_… or sk_test_…"
+              />
+            </label>
+            <label className="text-sm font-medium">
+              Segment access token (optional)
+              <input
+                className={inputClass}
+                type="password"
+                autoComplete="off"
+                value={segmentToken}
+                disabled={inputsDisabled}
+                onChange={(event) => setSegmentToken(event.target.value)}
+              />
+            </label>
+            <label className="text-sm font-medium">
+              PostHog API key (optional)
+              <input
+                className={inputClass}
+                type="password"
+                autoComplete="off"
+                value={posthogKey}
+                disabled={inputsDisabled}
+                onChange={(event) => setPosthogKey(event.target.value)}
               />
             </label>
             <div>
@@ -170,6 +227,28 @@ export function TenantSettings() {
                 disabled={inputsDisabled}
                 onChange={(event) => setStripeApiKey(event.target.value)}
                 placeholder="sk_live_… or sk_test_…"
+              />
+            </label>
+            <label className="flex-1 text-sm font-medium">
+              Segment token (optional)
+              <input
+                className={inputClass}
+                type="password"
+                autoComplete="off"
+                value={segmentToken}
+                disabled={inputsDisabled}
+                onChange={(event) => setSegmentToken(event.target.value)}
+              />
+            </label>
+            <label className="flex-1 text-sm font-medium">
+              PostHog key (optional)
+              <input
+                className={inputClass}
+                type="password"
+                autoComplete="off"
+                value={posthogKey}
+                disabled={inputsDisabled}
+                onChange={(event) => setPosthogKey(event.target.value)}
               />
             </label>
             <Button
@@ -261,6 +340,54 @@ export function TenantSettings() {
           {error ? <p className="mt-2 text-sm text-destructive">{error}</p> : null}
         </div>
       </form>
+
+      <Card className="rounded-2xl border-border shadow-card">
+        <CardHeader>
+          <CardTitle>Production webhook URLs</CardTitle>
+          <CardDescription>Whitelist these in Stripe and your telemetry vendor. Webhooks use Stripe-Signature / org resolution, not Clerk JWT.</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3 text-sm">
+          {(
+            [
+              ["Stripe", data.webhook_urls?.stripe || "http://localhost:3000/api/v1/webhooks/stripe"],
+              ["Telemetry", data.webhook_urls?.telemetry || "http://localhost:3000/api/v1/webhooks/telemetry"],
+            ] as const
+          ).map(([label, url]) => (
+            <div key={label} className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <p className="font-mono text-xs break-all">{label}: {url}</p>
+              <Button type="button" variant="outline" onClick={() => void copyText(url)}>
+                Copy
+              </Button>
+            </div>
+          ))}
+          <Link className="text-sm text-primary underline-offset-4 hover:underline" href="/billing">
+            Open Billing for plan status and Stripe Customer Portal
+          </Link>
+        </CardContent>
+      </Card>
+
+      <Card className="rounded-2xl border-border shadow-card">
+        <CardHeader>
+          <CardTitle>GDPR / CCPA delete</CardTitle>
+          <CardDescription>Hard-delete a customer by external id (Stripe customer id or userId).</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <label className="flex-1 text-sm font-medium">
+            Customer external id
+            <input
+              className={inputClass}
+              value={gdprId}
+              disabled={inputsDisabled}
+              onChange={(event) => setGdprId(event.target.value)}
+              placeholder="cus_…"
+            />
+          </label>
+          <Button type="button" variant="outline" disabled={inputsDisabled || !gdprId.trim()} onClick={() => void onDeleteCustomer()}>
+            Delete customer
+          </Button>
+        </CardContent>
+        {!isAdmin ? <p className="px-6 pb-4 text-sm text-muted-foreground">{ADMIN_REASON}</p> : null}
+      </Card>
 
       <Card className="rounded-2xl border-border shadow-card">
         <CardHeader>

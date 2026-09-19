@@ -9,6 +9,92 @@ from sqlalchemy.orm import Session
 from src.feature_builder import parse_timestamp
 from src.models_db import CustomerAccount, Organization, TelemetryEvent, utcnow
 
+_SUBSCRIPTION_STATUS_MAP = {
+    "active": "active",
+    "trialing": "active",
+    "past_due": "past_due",
+    "unpaid": "past_due",
+    "canceled": "canceled",
+    "cancelled": "canceled",
+    "incomplete": "incomplete",
+    "incomplete_expired": "canceled",
+}
+
+
+def _stripe_customer_id(obj: dict[str, Any]) -> Optional[str]:
+    customer = obj.get("customer") or obj.get("customer_id")
+    if isinstance(customer, dict):
+        customer = customer.get("id")
+    return str(customer) if customer else None
+
+
+def _is_platform_billing_event(
+    org: Organization,
+    event_type: Optional[str],
+    obj: dict[str, Any],
+    customer_id: Optional[str],
+) -> bool:
+    if event_type == "checkout.session.completed":
+        return True
+    if customer_id and org.stripe_customer_id:
+        return customer_id == org.stripe_customer_id
+    metadata = obj.get("metadata") or {}
+    hinted = str(metadata.get("org_id") or obj.get("client_reference_id") or "")
+    if hinted and hinted == org.org_id and not org.stripe_customer_id:
+        return event_type in {
+            "customer.subscription.created",
+            "customer.subscription.updated",
+            "customer.subscription.deleted",
+        }
+    return False
+
+
+def apply_org_billing_from_stripe(
+    db: Session,
+    payload: dict[str, Any],
+    org: Optional[Organization] = None,
+) -> Optional[Organization]:
+    """Keep Clerk org_id ↔ stripe_customer_id and subscription_status in sync."""
+    event_type = payload.get("type") or payload.get("event")
+    obj = (payload.get("data") or {}).get("object") or payload.get("object") or {}
+    customer_id = _stripe_customer_id(obj)
+    if event_type == "customer.created":
+        customer_id = str(obj.get("id") or customer_id or "") or customer_id
+    metadata = obj.get("metadata") or payload.get("metadata") or {}
+    hinted_org_id = metadata.get("org_id") or obj.get("client_reference_id")
+    target = org
+    if target is None and hinted_org_id:
+        target = db.query(Organization).filter(Organization.org_id == str(hinted_org_id)).one_or_none()
+    if target is None and customer_id:
+        target = (
+            db.query(Organization)
+            .filter(Organization.stripe_customer_id == customer_id)
+            .one_or_none()
+        )
+    if target is None:
+        return None
+    if not _is_platform_billing_event(target, event_type, obj, customer_id):
+        return target
+    if customer_id:
+        target.stripe_customer_id = customer_id
+    if event_type == "checkout.session.completed":
+        target.subscription_status = "active"
+    elif event_type in {"customer.subscription.updated", "customer.subscription.created"}:
+        mapped = _SUBSCRIPTION_STATUS_MAP.get(str(obj.get("status") or "").lower())
+        if mapped:
+            target.subscription_status = mapped
+    elif event_type == "customer.subscription.deleted":
+        target.subscription_status = "canceled"
+    elif event_type == "invoice.payment_failed":
+        target.subscription_status = "past_due"
+    elif event_type == "invoice.payment_succeeded":
+        target.subscription_status = "active"
+    elif event_type in {"charge.refunded", "refund.created"}:
+        # Keep customer id synced; status stays unless Stripe also sends subscription.deleted.
+        pass
+    db.flush()
+    return target
+
 
 def upsert_customer_account(
     db: Session,
@@ -68,50 +154,6 @@ def mrr_from_subscription(obj: dict[str, Any]) -> tuple[float, str]:
     if interval == "year":
         mrr = mrr / 12.0
     return round(mrr, 2), contract
-
-
-def apply_org_billing_from_stripe(
-    db: Session,
-    payload: dict[str, Any],
-    org: Optional[Organization] = None,
-) -> Optional[Organization]:
-    """Map checkout / invoice events onto Organization.subscription_status."""
-    event_type = payload.get("type") or payload.get("event")
-    obj = (payload.get("data") or {}).get("object") or payload.get("object") or {}
-    customer = obj.get("customer") or obj.get("customer_id")
-    if isinstance(customer, dict):
-        customer = customer.get("id")
-    customer_id = str(customer) if customer else None
-    metadata = obj.get("metadata") or payload.get("metadata") or {}
-    hinted_org_id = metadata.get("org_id") or obj.get("client_reference_id")
-    target = org
-    if target is None and hinted_org_id:
-        target = db.query(Organization).filter(Organization.org_id == str(hinted_org_id)).one_or_none()
-    if target is None and customer_id:
-        target = (
-            db.query(Organization)
-            .filter(Organization.stripe_customer_id == customer_id)
-            .one_or_none()
-        )
-    if target is None:
-        return None
-    if event_type == "checkout.session.completed":
-        target.subscription_status = "active"
-        if customer_id:
-            target.stripe_customer_id = customer_id
-        db.flush()
-        return target
-    if event_type == "invoice.payment_failed":
-        if customer_id and target.stripe_customer_id and customer_id != target.stripe_customer_id:
-            return target
-        if customer_id and not target.stripe_customer_id:
-            # Only flip the tenant bill when this Stripe customer is the org's billing ID.
-            return target
-        if customer_id == target.stripe_customer_id:
-            target.subscription_status = "past_due"
-            db.flush()
-        return target
-    return target
 
 
 def apply_stripe_event(db: Session, org: Organization, payload: dict[str, Any]) -> Optional[CustomerAccount]:

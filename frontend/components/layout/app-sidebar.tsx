@@ -3,7 +3,7 @@
 import { OrganizationSwitcher, SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/nextjs";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, DoorOpen, ShieldCheck, Settings2 } from "lucide-react";
+import { LayoutDashboard, DoorOpen, ShieldCheck, Settings2, CreditCard, AlertTriangle } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,8 @@ const ICONS = {
   "/": LayoutDashboard,
   "/acquisition": DoorOpen,
   "/staging": ShieldCheck,
+  "/billing": CreditCard,
+  "/jobs": AlertTriangle,
   "/settings": Settings2,
 } as const;
 

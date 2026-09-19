@@ -2,9 +2,9 @@
 
 [![Live Command Center](https://img.shields.io/badge/Live-Command%20Center-0ea5e9)](https://rev-lifecycle-engine-production.up.railway.app)
 [![Stripe ingestion](https://img.shields.io/badge/Stripe-webhook%20%2Fapi%2Fv1%2Fwebhooks%2Fstripe-635bff)](https://rev-lifecycle-engine-production.up.railway.app/api/v1/webhooks/stripe)
-[![Test status](https://img.shields.io/badge/tests-97%20passing-22c55e)](#testing)
+[![Test status](https://img.shields.io/badge/tests-110%20passing-22c55e)](#testing)
 
-**Production (Railway):** [Executive Command Center](https://rev-lifecycle-engine-production.up.railway.app) · Stripe ingest [`POST /api/v1/webhooks/stripe`](https://rev-lifecycle-engine-production.up.railway.app/api/v1/webhooks/stripe) · **97** unit & integration tests passing
+**Production (Railway):** [Executive Command Center](https://rev-lifecycle-engine-production.up.railway.app) · Stripe ingest [`POST /api/v1/webhooks/stripe`](https://rev-lifecycle-engine-production.up.railway.app/api/v1/webhooks/stripe) · **110** unit & integration tests passing
 
 **Production stack:** FastAPI + Next.js + Clerk JWT. Railway serves the Next.js UI on `$PORT` (typically 3000) and FastAPI internally on port 8000 (`bin/start.sh`). Authenticated product APIs expect `Authorization: Bearer <Clerk JWT>`. Streamlit (`app/dashboard.py`) remains in the repo as a legacy local analytics notebook UI — it is **not** the production product.
 
@@ -337,9 +337,10 @@ docker compose up --build
 ```
 
 - **app** (`Dockerfile`, `python:3.10-slim`, Node 20): seeds the demo book at image build, then `bin/start.sh` launches Uvicorn on internal `:8000` and Next.js on Railway `$PORT` (default 3000) with SIGTERM/SIGINT cleanup.
+- Railway **PORT** is the Next.js UI. FastAPI stays on internal **8000**. Set `NEXT_PUBLIC_API_URL` empty for same-origin `/api` rewrites, or to the public API URL if you split services. Set `CORS_ORIGINS` to the public frontend origin.
 - **postgres** (`postgres:15-alpine`): persistent `pgdata` volume and `pg_isready` healthcheck.
 - **redis** (`redis:7-alpine`): Celery broker for ingestion, backfill, and outbound.
-- Runtime env: `DATABASE_URL`, `ENCRYPTION_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, `CLERK_ISSUER` / `CLERK_JWKS_URL`, `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `FRONTEND_URL`.
+- Runtime env: `DATABASE_URL`, `REDIS_URL`, `ENCRYPTION_KEY`, `STRIPE_SECRET_KEY`, `STRIPE_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, `CLERK_ISSUER` / `CLERK_JWKS_URL`, `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `FRONTEND_URL`, `CORS_ORIGINS`.
 
 Local without Docker:
 
@@ -393,7 +394,7 @@ Prints API keys for **Acme SaaS** (`org_acme`, 50 accounts) and **Globex Analyti
 
 ### Commercial API
 
-Non-webhook product routes require a Clerk JWT (`Authorization: Bearer …`). Webhooks resolve the tenant via `X-Org-Id`, Segment `writeKey`, or Stripe `metadata.org_id` / `client_reference_id`. Seeded demo keys remain hashed on `Organization.api_key` for webhook fallback.
+Non-webhook product routes require a Clerk JWT (`Authorization: Bearer …`). Webhooks resolve the tenant via `X-Org-Id`, Segment `writeKey`, or Stripe `metadata.org_id` / `client_reference_id` plus `Stripe-Signature`. Seeded demo keys remain hashed on `Organization.api_key` for webhook fallback.
 
 ```bash
 # Health (public)
@@ -402,14 +403,15 @@ curl -s http://127.0.0.1:8000/health
 # Authenticated scoring
 curl -s -X POST http://127.0.0.1:8000/v1/predict \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: rle_acme_live_demo_key" \
+  -H "Authorization: Bearer <Clerk JWT>" \
   -d '{"customer_id":"cus_acme_000","acquisition_channel":"Paid Search","contract_type":"Monthly","avg_weekly_logins":1.0,"feature_adoption_score":2.2,"support_tickets_raised":4,"days_since_last_login":30,"monthly_recurring_revenue":640}'
 
-# Stripe customer upsert (returns 202 + job_id; set Stripe-Signature in production)
+# Stripe customer upsert (returns 202 + job_id; production must send Stripe-Signature)
 curl -s -X POST http://127.0.0.1:8000/api/v1/webhooks/stripe \
   -H "Content-Type: application/json" \
   -H "X-Org-Id: org_acme" \
-  -d '{"type":"customer.created","data":{"object":{"id":"cus_123","metadata":{"channel":"Paid Search","mrr":199}}}}'
+  -H "Stripe-Signature: t=…,v1=…" \
+  -d '{"type":"customer.created","data":{"object":{"id":"cus_123","metadata":{"channel":"Paid Search","mrr":199,"org_id":"org_acme"}}}}'
 
 # Product telemetry (Segment/PostHog batch)
 curl -s -X POST http://127.0.0.1:8000/api/v1/webhooks/telemetry \
@@ -439,7 +441,52 @@ Self-serve Growth billing is Clerk-authenticated Stripe Checkout:
 1. Signed-in user opens `/pricing` and clicks **Subscribe**.
 2. Next.js calls `POST /api/v1/billing/create-checkout-session` with the Clerk JWT. FastAPI upserts an `Organization` for the Clerk `org_id` (`subscription_status=incomplete` until paid) and returns a Stripe-hosted URL (`success_url` is `/?session_id={CHECKOUT_SESSION_ID}`).
 3. After payment, Stripe sends `checkout.session.completed` to `POST /api/v1/webhooks/stripe`. The webhook **sets `subscription_status=active` in the request** (it does not wait on Celery) so the new subscriber is not billed as inactive.
-4. The app lands on `/?session_id=...`, confirms the session via `POST /api/v1/billing/confirm-checkout`, then loads the Command Center. An empty book is expected until an Admin runs **historical backfill** from Settings.
+4. The app lands on `/?session_id=...`, confirms the session via `POST /api/v1/billing/confirm-checkout`, polls until `subscription_status=active`, then loads the Command Center. An empty book is expected until an Admin runs **historical backfill** from Settings (which scores every hydrated account).
+5. `GET /api/v1/billing` and `POST /api/v1/billing/portal` expose plan status and the Stripe Customer Portal (invoices, card, cancel). `incomplete` / `past_due` / `canceled` tenants receive HTTP 402 on product APIs and an **Update payment** path in the UI.
+
+### Environment contract
+
+| Variable | Role |
+| --- | --- |
+| `STRIPE_SECRET_KEY` | Checkout, Customer Portal, session retrieve |
+| `STRIPE_PRICE_ID` | Growth subscription price |
+| `STRIPE_WEBHOOK_SECRET` | Platform Stripe-Signature (tenant secret may override) |
+| `FRONTEND_URL` | Checkout success/cancel and portal return URL |
+| `CLERK_ISSUER` / `CLERK_JWKS_URL` / `CLERK_SECRET_KEY` / `CLERK_ORG_ID` | JWT validation and demo seed |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Next.js Clerk |
+| `NEXT_PUBLIC_API_URL` | Browser API origin (empty = same-origin rewrites) |
+| `DATABASE_URL` | Postgres in production; SQLite locally |
+| `REDIS_URL` | Celery broker |
+| `ENCRYPTION_KEY` | Fernet for Slack/Resend/Apollo/CRM tokens |
+| `CORS_ORIGINS` | Comma-separated browser origins |
+| `PUBLIC_API_URL` | Host copied into Settings webhook URLs |
+
+See `.env.example`.
+
+### Schema migrations
+
+Do not rely only on boot-time `ALTER TABLE … ADD COLUMN` for new work. Apply SQLAlchemy revisions with:
+
+```bash
+alembic upgrade head
+```
+
+`bin/start.sh` waits for Postgres, then runs `stamp_existing_then_upgrade()` (`src/schema_migrations.py`): if the database already has application tables (demo seed) but no `alembic_version` row, it runs **`alembic stamp head`** before **`alembic upgrade head`**. Empty databases skip stamp and upgrade normally. The first revision (`001_initial`) matches the current `src/models_db.py` models.
+
+### Postgres backups
+
+```bash
+export DATABASE_URL=postgresql+psycopg2://user:pass@host:5432/revlifecycle
+bin/backup-postgres.sh dump backup.dump
+bin/backup-postgres.sh restore backup.dump
+```
+
+Equivalent:
+
+```bash
+pg_dump "$DATABASE_URL" -Fc -f backup.dump
+pg_restore --clean --if-exists --no-owner -d "$DATABASE_URL" backup.dump
+```
 
 ---
 
@@ -493,7 +540,7 @@ uvicorn src.api:app --reload --port 8000
 
 Optional: set `WEBHOOK_URL` to a Slack incoming-webhook, Discord webhook, or CRM endpoint. If it is unset, `/v1/dispatch-alert` **simulates** the send and still writes `data/processed/dispatched_alerts_log.json`.
 
-Health check:
+Health check (`db` must be `ok` or the probe returns HTTP 503; Redis/Celery problems set `status=degraded`):
 
 ```bash
 curl -s http://127.0.0.1:8000/health
@@ -502,6 +549,9 @@ curl -s http://127.0.0.1:8000/health
 ```json
 {
   "status": "ok",
+  "db": "ok",
+  "redis": "ok",
+  "worker": "ok",
   "model_version": "1.0.0",
   "model_name": "xgboost",
   "at_risk_threshold": 0.65,
@@ -514,6 +564,7 @@ Score a customer:
 ```bash
 curl -s -X POST http://127.0.0.1:8000/v1/predict \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <Clerk JWT>" \
   -d '{
     "customer_id": "CUST_18821",
     "acquisition_channel": "Outbound Cold Email",
@@ -547,6 +598,7 @@ Dispatch a critical alert (fires when `churn_probability` > 0.70, or when `"forc
 ```bash
 curl -s -X POST http://127.0.0.1:8000/v1/dispatch-alert \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <Clerk JWT>" \
   -d '{
     "customer_id": "CUST_18821",
     "acquisition_channel": "Outbound Cold Email",
@@ -567,7 +619,7 @@ macOS note: XGBoost wheels need OpenMP (`brew install libomp`). The scorer falls
 
 ## Testing
 
-`python3 -m pytest` currently runs **97** passing tests across pipeline, auth, dashboard, Checkout, webhooks, and acquisition. Representative coverage:
+`python3 -m pytest` currently runs **110** passing tests across pipeline, auth, dashboard, Checkout, webhooks, acquisition, billing, backfill scoring, jobs, health, and Alembic. Representative coverage:
 
 | Test | Asserts |
 | --- | --- |
@@ -575,7 +627,14 @@ macOS note: XGBoost wheels need OpenMP (`brew install libomp`). The scorer falls
 | `test_pipeline_merge_and_features` | Row count, LTV:CAC identity, inactivity flag, one-hot rank |
 | `test_stats_significance` | t-test / χ² run and p-values ∈ [0, 1] |
 | `test_model_inference` | New rows score to probabilities ∈ [0.0, 1.0] |
-| `test_health_ok` | `GET /health` returns HTTP 200 with status and model version |
+| `test_health_ok` | `GET /health` returns HTTP 200 with db/redis/worker fields |
+| `test_member_cannot_run_outbound` | Front Door POST run is Admin-only |
+| `test_member_can_read_billing_and_open_portal_route` | Members can GET billing and open Customer Portal |
+| `test_past_due_returns_402_on_command_center` | past_due → HTTP 402; billing GET still works |
+| `test_backfill_writes_assessments_and_is_idempotent` | Historical backfill scores accounts; second run does not duplicate telemetry |
+| `test_stripe_webhook_smoke_creates_assessment` | Signed/insecure test webhook → 202 → ChurnAssessment |
+| `test_alembic_upgrade_head` | `alembic upgrade head` creates the current schema |
+| `test_stamp_then_upgrade_on_existing_tables` | Seeded DBs are stamped before upgrade |
 | `test_predict_returns_valid_payload` | `POST /v1/predict` returns HTTP 200, probability ∈ [0, 1], playbook, ARR at risk |
 | `test_create_checkout_session_returns_stripe_url` | Clerk JWT creates a Stripe Checkout session for the org |
 | `test_confirm_checkout_session_activates_paid_org` | `/?session_id=...` confirm path sets `subscription_status=active` |

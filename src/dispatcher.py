@@ -492,6 +492,37 @@ def dismiss_false_positive(
             session.close()
 
 
+def score_tenant_book(
+    org_id: str,
+    session: Optional[Any] = None,
+    engine=None,
+) -> dict[str, Any]:
+    """Persist a ChurnAssessment for every account in the tenant book (no outbound)."""
+    owns_session = session is None
+    if session is None:
+        session = get_session_factory()()
+    try:
+        accounts = session.query(CustomerAccount).filter(CustomerAccount.org_id == org_id).all()
+        if engine is None:
+            engine, _ = load_or_train(tune=False, persist=True)
+        scored = 0
+        for account in accounts:
+            _score_account(session, account, engine)
+            scored += 1
+        if owns_session:
+            session.commit()
+        else:
+            session.flush()
+        return {"ok": True, "org_id": org_id, "scored": scored}
+    except Exception:
+        if owns_session:
+            session.rollback()
+        raise
+    finally:
+        if owns_session:
+            session.close()
+
+
 def run_dispatcher_cron(
     session: Optional[Any] = None,
     now=None,

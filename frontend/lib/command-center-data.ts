@@ -11,6 +11,16 @@ export const NAV_ITEMS = [
     description: "HITL playbook review",
   },
   {
+    href: "/billing",
+    label: "Billing",
+    description: "Plan, invoices, payment",
+  },
+  {
+    href: "/jobs",
+    label: "Failed jobs",
+    description: "DLQ & ingestion errors",
+  },
+  {
     href: "/settings",
     label: "Tenant Settings",
     description: "Integrations & policy",

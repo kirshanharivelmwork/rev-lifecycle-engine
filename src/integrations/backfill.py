@@ -494,12 +494,56 @@ def persist_historical_rows(
     accounts = _apply_accounts(session, org, customers, subscriptions)
     telemetry = _telemetry_from_billing(org.org_id, accounts, subscriptions)
     telemetry.extend(_telemetry_from_product_events(org.org_id, accounts, product_events))
+    telemetry = _dedupe_historical_telemetry(session, org.org_id, telemetry)
     inserted_events = bulk_insert_in_chunks(session, telemetry, BATCH_SIZE)
     session.commit()
     return {
         "accounts": len(accounts),
         "telemetry_events": inserted_events,
     }
+
+
+def _dedupe_historical_telemetry(
+    session: Session,
+    org_id: str,
+    rows: list[TelemetryEvent],
+) -> list[TelemetryEvent]:
+    existing = session.query(TelemetryEvent).filter(TelemetryEvent.org_id == org_id).all()
+    keys = {(row.customer_account_id, row.event_name, row.timestamp) for row in existing}
+    subscription_ids = {
+        str((row.properties or {}).get("subscription_id"))
+        for row in existing
+        if (row.properties or {}).get("subscription_id")
+    }
+    backfilled_accounts = {
+        row.customer_account_id
+        for row in existing
+        if (row.properties or {}).get("source") == "historical_backfill"
+    }
+    unique: list[TelemetryEvent] = []
+    seen_subs = set(subscription_ids)
+    seen_keys = set(keys)
+    seen_sub_events = {
+        (row.customer_account_id, row.event_name, str((row.properties or {}).get("subscription_id")))
+        for row in existing
+        if (row.properties or {}).get("subscription_id")
+    }
+    for row in rows:
+        props = row.properties or {}
+        sub_id = props.get("subscription_id")
+        sub_key = (row.customer_account_id, row.event_name, str(sub_id)) if sub_id else None
+        if sub_key and sub_key in seen_sub_events:
+            continue
+        if (row.customer_account_id, row.event_name, row.timestamp) in seen_keys:
+            continue
+        if props.get("vendor") == "mock" and row.customer_account_id in backfilled_accounts:
+            continue
+        unique.append(row)
+        seen_keys.add((row.customer_account_id, row.event_name, row.timestamp))
+        if sub_key:
+            seen_sub_events.add(sub_key)
+            seen_subs.add(str(sub_id))
+    return unique
 
 
 async def run_historical_backfill(
@@ -553,12 +597,17 @@ async def run_historical_backfill(
             now=now,
         )
         counts = persist_historical_rows(session, org, customers, subscriptions, product_events)
+        from src.dispatcher import score_tenant_book
+
+        scored = score_tenant_book(org_id, session=session)
+        session.commit()
         return {
             "ok": True,
             "org_id": org_id,
             "stripe_customers": len(customers),
             "stripe_subscriptions": len(subscriptions),
             "product_source": product_source,
+            "assessments": int(scored.get("scored") or 0),
             **counts,
         }
     except Exception:

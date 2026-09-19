@@ -1,5 +1,23 @@
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
 
+export class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+export function isBillingBlocked(error: unknown): boolean {
+  if (error instanceof ApiError && error.status === 402) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  return message.includes("subscription inactive") || message.includes("402");
+}
+
 export async function apiFetch<T>(path: string, token: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   headers.set("Authorization", `Bearer ${token}`);
@@ -24,7 +42,7 @@ export async function apiFetch<T>(path: string, token: string, init?: RequestIni
     } catch {
       detail = (await response.text()) || detail;
     }
-    throw new Error(detail || `Request failed (${response.status})`);
+    throw new ApiError(detail || `Request failed (${response.status})`, response.status);
   }
   if (response.status === 204) {
     return undefined as T;

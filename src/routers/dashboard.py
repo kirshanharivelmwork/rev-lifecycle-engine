@@ -27,6 +27,7 @@ from src.models_db import (
 from src.outcome_tracker import audit_intervention_outcomes
 from src.paths import AT_RISK_THRESHOLD, HITL_MRR_THRESHOLD, INTERVENTION_SUCCESS_RATE, MODEL_VERSION
 from src.tasks import trigger_outbound_engine
+from src.urls import public_api_base, webhook_urls
 
 router = APIRouter(tags=["dashboard"])
 
@@ -254,6 +255,8 @@ def get_tenant_settings(
     return {
         "tenant": {**_tenant_payload(org), "subscriber_count": len(book)},
         "integrations": _integration_flags(org),
+        "webhook_urls": webhook_urls(),
+        "api_base": public_api_base(),
         "salesforce_instance_url": org.salesforce_instance_url,
         "audit_log": [
             {
@@ -373,7 +376,7 @@ def get_acquisition(
 def run_acquisition_outbound(
     payload: OutboundRunRequest,
     org: Organization = Depends(get_current_org),
-    _user: AuthUser = Depends(get_current_user),
+    _admin: AuthUser = Depends(require_admin_role),
 ) -> dict[str, Any]:
     trigger_outbound_engine.delay(org.org_id, payload.search_params, payload.campaign_id)
     return {

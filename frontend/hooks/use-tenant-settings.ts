@@ -64,13 +64,19 @@ export function useTenantSettings() {
   );
 
   const runBackfill = useCallback(
-    async (stripeApiKey: string) => {
+    async (body: {
+      stripe_api_key: string;
+      segment_access_token?: string;
+      posthog_api_key?: string;
+      posthog_host?: string;
+      posthog_project_id?: string;
+    }) => {
       setBackfilling(true);
       setError(null);
       try {
         const payload = await request<BackfillResponse>("/api/v1/backfill", {
           method: "POST",
-          body: JSON.stringify({ stripe_api_key: stripeApiKey }),
+          body: JSON.stringify(body),
         });
         await reload({ silent: true });
         return payload;
@@ -85,5 +91,13 @@ export function useTenantSettings() {
     [reload, request],
   );
 
-  return { data, error, loading, saving, backfilling, isLoaded, isSignedIn, reload, save, runBackfill };
+  const deleteCustomer = useCallback(
+    async (customerExternalId: string) => {
+      await request(`/api/v1/customers/${encodeURIComponent(customerExternalId)}`, { method: "DELETE" });
+      await reload({ silent: true });
+    },
+    [reload, request],
+  );
+
+  return { data, error, loading, saving, backfilling, isLoaded, isSignedIn, reload, save, runBackfill, deleteCustomer };
 }

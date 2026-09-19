@@ -15,7 +15,9 @@ from sqlalchemy.orm import Session, with_loader_criteria
 from src.models_db import (
     ChurnAssessment,
     CustomerAccount,
+    DeadLetterJob,
     DispatchedAction,
+    IngestionJob,
     Organization,
     OutboundCampaign,
     ProspectLead,
@@ -33,6 +35,8 @@ RLS_TABLES = (
     "system_audit_logs",
     "prospect_leads",
     "outbound_campaigns",
+    "dead_letter_jobs",
+    "ingestion_jobs",
 )
 RLS_MODELS = (
     CustomerAccount,
@@ -42,6 +46,8 @@ RLS_MODELS = (
     SystemAuditLog,
     ProspectLead,
     OutboundCampaign,
+    DeadLetterJob,
+    IngestionJob,
 )
 _ORM_RLS_REGISTERED = False
 

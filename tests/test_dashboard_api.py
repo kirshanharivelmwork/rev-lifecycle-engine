@@ -62,6 +62,7 @@ def test_settings_masks_secrets_and_patch_updates_policy(dashboard_client: TestC
     payload = listed.json()
     assert "stripe_webhook_secret" not in payload
     assert "integrations" in payload
+    assert "stripe" in payload.get("webhook_urls", {})
     updated = dashboard_client.patch(
         "/api/v1/settings",
         json={"alert_cooldown_days": 21, "hitl_mrr_threshold": 2500},
@@ -96,6 +97,9 @@ def test_acquisition_lists_prospects_and_run_queues(dashboard_client: TestClient
     monkeypatch.setattr("src.routers.dashboard.trigger_outbound_engine.delay", fake_delay)
     queued = dashboard_client.post("/api/v1/acquisition/run", json={})
     assert queued.status_code == 200, queued.text
+    member = clerk_auth_headers(org_id=ACME_ORG_ID, role="Member")
+    denied = dashboard_client.post("/api/v1/acquisition/run", json={}, headers=member)
+    assert denied.status_code == 403
     assert queued.json()["accepted"] is True
     assert queued.json()["status"] == "queued"
     assert calls[0]["org_id"] == ACME_ORG_ID

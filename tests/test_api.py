@@ -58,9 +58,12 @@ def test_health_ok(client: TestClient) -> None:
     response = client.get("/health")
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "ok"
+    assert body["status"] in {"ok", "degraded"}
     assert body["model_version"] == MODEL_VERSION
     assert body["model_name"] in {"xgboost", "random_forest", "not_loaded"}
+    assert body["db"] == "ok"
+    assert "redis" in body
+    assert "worker" in body
     assert "critical_threshold" in body
     assert "Clerk JWT" in body["auth"]
 
@@ -79,8 +82,9 @@ def test_health_does_not_train_when_raw_csv_missing(monkeypatch) -> None:
         response = test_client.get("/health")
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "ok"
+    assert body["status"] in {"ok", "degraded"}
     assert body["model_name"] == "not_loaded"
+    assert body["db"] == "ok"
 
 
 def test_predict_returns_valid_payload(client: TestClient) -> None:
@@ -132,3 +136,13 @@ def test_member_jwt_cannot_dispatch(client: TestClient) -> None:
     member = clerk_auth_headers(org_id="org_test", role="Member")
     response = client.post("/v1/dispatch-alert", json=HIGH_RISK, headers=member)
     assert response.status_code == 403
+
+
+def test_cors_allow_origins_includes_frontend_url(monkeypatch) -> None:
+    from src.api import cors_allow_origins
+
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:3000")
+    monkeypatch.setenv("FRONTEND_URL", "https://rev-lifecycle.example")
+    origins = cors_allow_origins()
+    assert "http://localhost:3000" in origins
+    assert "https://rev-lifecycle.example" in origins

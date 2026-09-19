@@ -65,6 +65,11 @@ export type SettingsPayload = {
     apollo: boolean;
     instantly: boolean;
   };
+  webhook_urls?: {
+    stripe: string;
+    telemetry: string;
+  };
+  api_base?: string;
   salesforce_instance_url: string | null;
   audit_log: {
     when: string;
@@ -72,6 +77,37 @@ export type SettingsPayload = {
     action: string;
     old: unknown;
     new: unknown;
+  }[];
+};
+
+export type BillingPayload = {
+  org_id: string;
+  name?: string;
+  plan_tier: string;
+  subscription_status: string;
+  stripe_customer_id: string | null;
+  portal_available: boolean;
+  needs_payment: boolean;
+};
+
+export type JobsPayload = {
+  org_id: string;
+  dead_letter: {
+    id: string;
+    task_name: string;
+    error_message: string | null;
+    retry_count: number;
+    failed_at: string | null;
+    resolved: boolean;
+  }[];
+  ingestion_failures: {
+    id: string;
+    source: string;
+    status: string;
+    attempts: number;
+    last_error: string | null;
+    created_at: string | null;
+    completed_at: string | null;
   }[];
 };
 

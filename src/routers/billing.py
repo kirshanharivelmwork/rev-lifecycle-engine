@@ -1,4 +1,4 @@
-"""Admin-only tenant billing status and self-serve Stripe Checkout."""
+"""Tenant billing status, Stripe Checkout, and Customer Portal."""
 
 from __future__ import annotations
 
@@ -8,23 +8,30 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from src.auth import AuthUser, generate_api_key, get_current_org, hash_api_key, require_admin_role
+from src.auth import AuthUser, generate_api_key, get_current_org_unpaid, hash_api_key
 from src.models_db import Organization
 
 router = APIRouter(tags=["billing"])
 
 
-@router.get("/billing")
-def get_billing_status(
-    _admin: AuthUser = Depends(require_admin_role),
-    org: Organization = Depends(get_current_org),
-) -> dict:
+def _billing_payload(org: Organization) -> dict[str, Any]:
+    status_value = (org.subscription_status or "incomplete").lower()
     return {
         "org_id": org.org_id,
+        "name": org.name,
         "plan_tier": org.plan_tier,
         "subscription_status": org.subscription_status,
         "stripe_customer_id": org.stripe_customer_id,
+        "portal_available": bool(org.stripe_customer_id),
+        "needs_payment": status_value in {"incomplete", "past_due", "canceled", "cancelled", "unpaid"},
     }
+
+
+@router.get("/billing")
+def get_billing_status(
+    org: Organization = Depends(get_current_org_unpaid),
+) -> dict[str, Any]:
+    return _billing_payload(org)
 
 
 def _frontend_url() -> str:
@@ -156,3 +163,34 @@ def confirm_stripe_checkout_session(user: AuthUser, db: Session, session_id: str
         "subscription_status": org.subscription_status,
         "activated": activated,
     }
+
+
+def create_stripe_portal_session(user: AuthUser, db: Session) -> dict[str, Any]:
+    """Return a Stripe Customer Portal URL for invoices, card update, and cancel."""
+    import stripe
+
+    org = ensure_organization_for_user(db, user)
+    if not org.stripe_customer_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No Stripe customer on this organization yet. Complete Checkout first.",
+        )
+    secret = (os.getenv("STRIPE_SECRET_KEY") or os.getenv("STRIPE_API_KEY") or "").strip()
+    if not secret:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="STRIPE_SECRET_KEY is not configured",
+        )
+    stripe.api_key = secret
+    frontend = _frontend_url()
+    session = stripe.billing_portal.Session.create(
+        customer=org.stripe_customer_id,
+        return_url=f"{frontend}/billing",
+    )
+    url = getattr(session, "url", None) or (session.get("url") if isinstance(session, dict) else None)
+    if not url:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Stripe did not return a Customer Portal URL",
+        )
+    return {"url": url, "org_id": org.org_id}

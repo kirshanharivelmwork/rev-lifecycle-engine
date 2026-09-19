@@ -236,15 +236,28 @@ def require_admin_role(user: AuthUser = Depends(get_current_user)) -> AuthUser:
     return user
 
 
-def get_current_org(
-    user: AuthUser = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> Organization:
+def load_organization_for_user(db: Session, user: AuthUser) -> Organization:
     org = db.query(Organization).filter(Organization.org_id == user.org_id).one_or_none()
     if org is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Unknown organization for Clerk JWT",
         )
+    return org
+
+
+def get_current_org(
+    user: AuthUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Organization:
+    org = load_organization_for_user(db, user)
     raise_if_inactive(org)
     return org
+
+
+def get_current_org_unpaid(
+    user: AuthUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Organization:
+    """Load the Clerk org even when subscription_status would 402 the product APIs."""
+    return load_organization_for_user(db, user)

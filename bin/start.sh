@@ -54,6 +54,12 @@ if url.startswith("postgresql"):
         raise SystemExit(f"PostgreSQL not ready: {last}")
 
 reset_engine()
+try:
+    from src.schema_migrations import stamp_existing_then_upgrade
+
+    stamp_existing_then_upgrade()
+except Exception as exc:
+    raise SystemExit(f"alembic stamp/upgrade failed: {exc}") from exc
 init_db()
 session = get_session_factory()()
 try:

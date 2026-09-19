@@ -11,7 +11,7 @@ from slowapi.util import get_remote_address
 
 from src.models_db import Organization
 
-INACTIVE = {"past_due", "canceled", "cancelled"}
+INACTIVE = {"incomplete", "past_due", "canceled", "cancelled", "unpaid"}
 BILLING_ERROR = "Tenant subscription inactive. Please update billing."
 
 

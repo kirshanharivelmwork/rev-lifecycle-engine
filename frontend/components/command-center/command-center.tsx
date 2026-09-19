@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
+import { PaymentCta } from "@/components/billing/payment-cta";
 import { ActionStream } from "@/components/command-center/action-stream";
 import { AtRiskBook } from "@/components/command-center/at-risk-book";
 import { BookRiskChart } from "@/components/command-center/book-risk-chart";
@@ -12,19 +13,27 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { useAuthedFetch } from "@/hooks/use-authed-fetch";
 import { useCommandCenter } from "@/hooks/use-command-center";
 import { formatUsd } from "@/lib/command-center-data";
-import type { CheckoutConfirmResponse, TenantSummary } from "@/lib/types";
+import type { BillingPayload, CheckoutConfirmResponse } from "@/lib/types";
+
+const CHECKOUT_POLL_MS = 2000;
+const CHECKOUT_MAX_ATTEMPTS = 15;
 
 export function CommandCenter() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const sessionId = searchParams.get("session_id");
   const { request, isLoaded, isSignedIn } = useAuthedFetch();
-  const { data, error, loading, reload } = useCommandCenter();
+  const [checkoutActive, setCheckoutActive] = useState(!sessionId);
   const [activating, setActivating] = useState(Boolean(sessionId));
   const [activationNote, setActivationNote] = useState<string | null>(null);
+  const [activationTimedOut, setActivationTimedOut] = useState(false);
+  const { data, error, loading, billingBlocked, reload } = useCommandCenter({
+    enabled: checkoutActive,
+  });
 
   useEffect(() => {
     if (!sessionId) {
+      setCheckoutActive(true);
       setActivating(false);
       return;
     }
@@ -35,48 +44,43 @@ export function CommandCenter() {
 
     async function activateFromCheckout() {
       setActivating(true);
+      setActivationTimedOut(false);
       setActivationNote("Payment received. Activating your workspace…");
-      try {
-        for (let attempt = 0; attempt < 12; attempt += 1) {
-          try {
-            const confirmed = await request<CheckoutConfirmResponse>("/api/v1/billing/confirm-checkout", {
-              method: "POST",
-              body: JSON.stringify({ session_id: sessionId }),
-            });
-            if (confirmed.activated || confirmed.subscription_status === "active") {
-              if (!cancelled) {
-                setActivationNote("Subscription is active.");
-                router.replace("/");
-                await reload();
-                setActivating(false);
-              }
-              return;
+      for (let attempt = 0; attempt < CHECKOUT_MAX_ATTEMPTS; attempt += 1) {
+        if (cancelled) {
+          return;
+        }
+        try {
+          await request<CheckoutConfirmResponse>("/api/v1/billing/confirm-checkout", {
+            method: "POST",
+            body: JSON.stringify({ session_id: sessionId }),
+          });
+        } catch {
+          // Webhook may still win; GET /billing does not 402 for unpaid tenants.
+        }
+        try {
+          const billing = await request<BillingPayload>("/api/v1/billing");
+          if (billing.subscription_status === "active") {
+            if (!cancelled) {
+              setActivationNote("Subscription is active.");
+              setCheckoutActive(true);
+              router.replace("/");
+              await reload();
+              setActivating(false);
             }
-          } catch {
-            try {
-              const tenant = await request<TenantSummary>("/api/v1/tenant");
-              if (tenant.subscription_status === "active") {
-                if (!cancelled) {
-                  router.replace("/");
-                  await reload();
-                  setActivating(false);
-                }
-                return;
-              }
-            } catch {
-              // Webhook may still be in flight; keep polling.
-            }
+            return;
           }
-          await new Promise((resolve) => setTimeout(resolve, 1000));
+        } catch {
+          // Keep polling until active or timeout.
         }
-        if (!cancelled) {
-          setActivationNote("Still waiting on Stripe. The Command Center will load as soon as billing is active.");
-          setActivating(false);
+        if (attempt < CHECKOUT_MAX_ATTEMPTS - 1) {
+          await new Promise((resolve) => setTimeout(resolve, CHECKOUT_POLL_MS));
         }
-      } finally {
-        if (!cancelled) {
-          setActivating(false);
-        }
+      }
+      if (!cancelled) {
+        setActivationNote("Stripe billing is still settling. Update payment if this persists.");
+        setActivationTimedOut(true);
+        setActivating(false);
       }
     }
 
@@ -86,7 +90,7 @@ export function CommandCenter() {
     };
   }, [sessionId, isLoaded, isSignedIn, request, router, reload]);
 
-  if (activating) {
+  if (sessionId && (activating || !checkoutActive) && !activationTimedOut) {
     return (
       <div className="mx-auto flex max-w-[1400px] flex-col gap-3">
         <p className="text-sm text-muted-foreground">{activationNote || "Activating your subscription…"}</p>
@@ -94,22 +98,26 @@ export function CommandCenter() {
     );
   }
 
+  if (sessionId && activationTimedOut) {
+    return (
+      <PaymentCta
+        message={activationNote || "Timed out waiting for Stripe to mark this workspace active."}
+      />
+    );
+  }
+
   if (loading) {
     return <p className="text-sm text-muted-foreground">Loading live command center…</p>;
   }
   if (error) {
-    const billingBlocked = error.toLowerCase().includes("subscription inactive") || error.toLowerCase().includes("402");
-    if (sessionId || billingBlocked) {
+    if (billingBlocked) {
       return (
-        <div className="mx-auto flex max-w-xl flex-col gap-3">
-          <p className="text-sm text-muted-foreground">
-            {activationNote || "Finishing Stripe Checkout. This page retries until your subscription is active."}
-          </p>
-          <p className="text-sm text-destructive">{error}</p>
-          <Link className="text-sm text-primary underline-offset-4 hover:underline" href="/pricing">
-            Return to pricing
-          </Link>
-        </div>
+        <PaymentCta
+          message={
+            activationNote ||
+            "This workspace needs an active subscription before the Command Center will load."
+          }
+        />
       );
     }
     return <p className="text-sm text-destructive">{error}</p>;

@@ -49,10 +49,12 @@ def process_ingestion_job(job_id: str, max_attempts: int = MAX_ATTEMPTS) -> dict
             source = job.source
             if source == "stripe":
                 account = apply_stripe_event(session, org, payload)
-                if account is not None and payload.get("type") in {
+                event_type = payload.get("type")
+                if account is not None and event_type in {
                     "invoice.payment_failed",
                     "customer.subscription.updated",
                     "customer.subscription.created",
+                    "customer.created",
                 }:
                     if not org.stripe_customer_id or account.customer_external_id != org.stripe_customer_id:
                         evaluate_and_trigger_actions(account.id, org.org_id, session=session)
@@ -75,6 +77,7 @@ def process_ingestion_job(job_id: str, max_attempts: int = MAX_ATTEMPTS) -> dict
             session = get_session_factory()()
             org_id = "unknown"
             payload: dict = {}
+            job = None
             try:
                 job = session.get(IngestionJob, job_id)
                 if job:
@@ -90,7 +93,11 @@ def process_ingestion_job(job_id: str, max_attempts: int = MAX_ATTEMPTS) -> dict
                 record_dead_letter(
                     org_id,
                     "process_ingestion_job",
-                    payload,
+                    {
+                        **(payload if isinstance(payload, dict) else {}),
+                        "job_id": job_id,
+                        "source": getattr(job, "source", None) if job else None,
+                    },
                     last_error or "unknown",
                     attempt,
                 )

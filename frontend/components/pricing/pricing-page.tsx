@@ -5,7 +5,7 @@ import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { API_BASE } from "@/lib/api";
+import { apiFetch } from "@/lib/api";
 
 export function PricingSubscribe() {
   const { getToken, isLoaded, isSignedIn } = useAuth();
@@ -20,18 +20,10 @@ export function PricingSubscribe() {
       if (!token) {
         throw new Error("Sign in to subscribe your organization.");
       }
-      const response = await fetch(`${API_BASE}/api/v1/billing/create-checkout-session`, {
+      const body = await apiFetch<{ url?: string }>("/api/v1/billing/create-checkout-session", token, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
+        body: JSON.stringify({}),
       });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        const detail = typeof body.detail === "string" ? body.detail : "Unable to start Stripe Checkout";
-        throw new Error(detail);
-      }
       if (!body.url) {
         throw new Error("Checkout session did not include a URL");
       }
