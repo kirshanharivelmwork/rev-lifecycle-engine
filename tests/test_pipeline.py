@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.churn_model import ChurnScoringEngine
+from src.churn_model import ChurnScoringEngine, _ensure_raw_extracts
 from src.data_pipeline import ANNUAL_CHURN_MARGIN_FACTOR, run_pipeline
 from src.paths import (
     ACQUISITION_LEADS_PATH,
@@ -14,6 +14,28 @@ from src.paths import (
     USER_TELEMETRY_PATH,
 )
 from src.stats_engine import chi_square_channel_churn, two_sample_ttest_adoption
+
+
+def test_ensure_raw_extracts_generates_when_csv_missing(monkeypatch, tmp_path) -> None:
+    leads = tmp_path / "acquisition_leads.csv"
+    telemetry = tmp_path / "user_telemetry_churn.csv"
+    called = {"n": 0}
+
+    def fake_generate(*_args, **_kwargs) -> None:
+        called["n"] += 1
+        leads.write_text("customer_id\nCUST_1\n", encoding="utf-8")
+        telemetry.write_text("customer_id\nCUST_1\n", encoding="utf-8")
+
+    monkeypatch.setattr("src.paths.ACQUISITION_LEADS_PATH", leads)
+    monkeypatch.setattr("src.paths.USER_TELEMETRY_PATH", telemetry)
+    monkeypatch.setattr("src.generate_data.generate_datasets", fake_generate)
+
+    _ensure_raw_extracts()
+    assert called["n"] == 1
+    assert leads.exists()
+
+    _ensure_raw_extracts()
+    assert called["n"] == 1
 
 
 def test_data_generation(raw_tables) -> None:

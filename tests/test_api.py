@@ -60,9 +60,27 @@ def test_health_ok(client: TestClient) -> None:
     body = response.json()
     assert body["status"] == "ok"
     assert body["model_version"] == MODEL_VERSION
-    assert body["model_name"] in {"xgboost", "random_forest"}
+    assert body["model_name"] in {"xgboost", "random_forest", "not_loaded"}
     assert "critical_threshold" in body
     assert "Clerk JWT" in body["auth"]
+
+
+def test_health_does_not_train_when_raw_csv_missing(monkeypatch) -> None:
+    """Railway probes /health on boot; missing acquisition_leads.csv must not 500."""
+    import src.api as api_mod
+
+    def boom(*_args, **_kwargs):
+        raise FileNotFoundError("/app/data/raw/acquisition_leads.csv")
+
+    monkeypatch.setattr(api_mod, "_ENGINE", None)
+    monkeypatch.setattr(api_mod, "load_or_train", boom)
+    monkeypatch.setattr("src.churn_model.load_or_train", boom)
+    with TestClient(app) as test_client:
+        response = test_client.get("/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["model_name"] == "not_loaded"
 
 
 def test_predict_returns_valid_payload(client: TestClient) -> None:

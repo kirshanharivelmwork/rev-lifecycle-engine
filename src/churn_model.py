@@ -437,9 +437,24 @@ def _recommend_intervention(row: pd.Series) -> str:
     return recommend_playbook(row)
 
 
+def _ensure_raw_extracts() -> None:
+    """Create synthetic CSVs when Docker/production images omit gitignored data/raw."""
+    from src.generate_data import generate_datasets
+    from src.paths import ACQUISITION_LEADS_PATH, USER_TELEMETRY_PATH
+
+    if ACQUISITION_LEADS_PATH.exists() and USER_TELEMETRY_PATH.exists():
+        return
+    LOGGER.warning(
+        "Training extracts missing at %s; generating synthetic datasets so scoring can start",
+        ACQUISITION_LEADS_PATH,
+    )
+    generate_datasets()
+
+
 def _load_features() -> pd.DataFrame:
     if FULL_FUNNEL_FEATURES_PATH.exists():
         return pd.read_csv(FULL_FUNNEL_FEATURES_PATH)
+    _ensure_raw_extracts()
     return run_pipeline()
 
 
@@ -499,7 +514,12 @@ def load_or_train(tune: bool = False, persist: bool = True) -> tuple[ChurnScorin
             return load_engine()
         except Exception as exc:
             LOGGER.warning("Could not load %s (%s); retraining", ENGINE_BUNDLE_PATH, exc)
-    data = _load_features()
+    try:
+        data = _load_features()
+    except FileNotFoundError as exc:
+        LOGGER.warning("%s; generating training data and retrying", exc)
+        _ensure_raw_extracts()
+        data = _load_features()
     engine = ChurnScoringEngine()
     engine.fit(data, tune=tune)
     if persist:

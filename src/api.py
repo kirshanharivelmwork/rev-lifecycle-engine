@@ -354,11 +354,15 @@ def _append_dispatch_log(record: dict[str, Any]) -> None:
 
 
 @app.get("/health")
-def health(engine: ChurnScoringEngine = Depends(get_engine)) -> dict[str, Any]:
+def health() -> dict[str, Any]:
+    """Liveness probe: must not train or read gitignored CSVs (Railway / Docker boot)."""
+    model_name = (
+        getattr(_ENGINE, "production_name_", None) if _ENGINE is not None else "not_loaded"
+    )
     return {
         "status": "ok",
-        "model_version": MODEL_VERSION,
-        "model_name": engine.production_name_,
+        "model_version": _LOADED_VERSION if _ENGINE is not None else MODEL_VERSION,
+        "model_name": model_name or "not_loaded",
         "at_risk_threshold": AT_RISK_THRESHOLD,
         "critical_threshold": CRITICAL_THRESHOLD,
         "auth": "Clerk JWT bearer token required on non-webhook routes; Admin role for billing and dispatcher",
