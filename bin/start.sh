@@ -5,11 +5,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 export PYTHONPATH="${PYTHONPATH:-$ROOT}"
 
-# Railway injects PORT for public HTTP. FastAPI stays on an internal port that
-# matches Next.js rewrites (http://127.0.0.1:8000 baked at image build).
-PORT="${PORT:-3000}"
+# FastAPI stays on an internal port that matches Next.js rewrites
+# (http://127.0.0.1:8000 baked at image build). Do not bind it to Railway $PORT.
 API_PORT="${API_PORT:-8000}"
-export PORT
 export API_PORT
 export API_INTERNAL_URL="${API_INTERNAL_URL:-http://127.0.0.1:${API_PORT}}"
 RUN_CELERY="${RUN_CELERY:-1}"
@@ -97,6 +95,7 @@ if [[ "${RUN_CELERY}" == "1" || "${RUN_CELERY}" == "true" ]]; then
 fi
 
 cd "$ROOT/frontend"
-# Bind the public Next.js server to Railway's $PORT on all interfaces.
+# Railway's proxy only reaches the port in $PORT (injected at runtime).
+# Do not hardcode 8080/3000 — local runs fall back to 3000 when PORT is unset.
 export HOSTNAME=0.0.0.0
-npm start -- -H 0.0.0.0 -p "${PORT}"
+npx next start -H 0.0.0.0 -p "${PORT:-3000}"
