@@ -118,13 +118,13 @@ def migrate_schema(engine: Engine) -> None:
     _ensure_column(engine, "organizations", "salesforce_instance_url", "salesforce_instance_url TEXT")
     _ensure_column(engine, "organizations", "apollo_api_key", "apollo_api_key TEXT")
     _ensure_column(engine, "organizations", "instantly_api_key", "instantly_api_key TEXT")
-    _ensure_column(engine, "customer_accounts", "last_contacted_at", "last_contacted_at DATETIME")
+    _ensure_column(engine, "customer_accounts", "last_contacted_at", "last_contacted_at TIMESTAMP")
     _ensure_column(engine, "customer_accounts", "cooldown_days", "cooldown_days INTEGER DEFAULT 14")
-    _ensure_column(engine, "customer_accounts", "suppressed_until", "suppressed_until DATETIME")
-    _ensure_column(engine, "customer_accounts", "contract_renewal_at", "contract_renewal_at DATETIME")
+    _ensure_column(engine, "customer_accounts", "suppressed_until", "suppressed_until TIMESTAMP")
+    _ensure_column(engine, "customer_accounts", "contract_renewal_at", "contract_renewal_at TIMESTAMP")
     _ensure_column(engine, "customer_accounts", "approval_status", "approval_status VARCHAR(32) DEFAULT 'none'")
     _ensure_column(engine, "customer_accounts", "crm_account_id", "crm_account_id VARCHAR(128)")
-    _ensure_column(engine, "ingestion_jobs", "next_attempt_at", "next_attempt_at DATETIME")
+    _ensure_column(engine, "ingestion_jobs", "next_attempt_at", "next_attempt_at TIMESTAMP")
     migrate_plaintext_secrets(engine)
 
 
