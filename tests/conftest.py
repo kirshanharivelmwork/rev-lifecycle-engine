@@ -11,6 +11,8 @@ os.environ.setdefault("CLERK_ISSUER", "https://clerk.test")
 os.environ.setdefault("CLERK_JWKS_URL", "https://clerk.test/.well-known/jwks.json")
 # Valid Fernet key used by every test unless a case monkeypatches ENCRYPTION_KEY.
 os.environ.setdefault("ENCRYPTION_KEY", "C4BK8b1E0Jd-wGAIKMFxUN55sQR_K912UqBiYcfpubI=")
+os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+os.environ.setdefault("CELERY_TASK_ALWAYS_EAGER", "1")
 
 import jwt
 import pytest
@@ -79,6 +81,16 @@ def clerk_auth_headers(
 @pytest.fixture(scope="session")
 def clerk_jwks_client() -> FakePyJWKClient:
     return FakePyJWKClient()
+
+
+@pytest.fixture(autouse=True)
+def celery_tasks_eager():
+    """Run Celery tasks in-process so tests never need a live Redis broker."""
+    from src.worker import celery_app
+
+    celery_app.conf.task_always_eager = True
+    celery_app.conf.task_eager_propagates = True
+    yield
 
 
 @pytest.fixture(autouse=True)

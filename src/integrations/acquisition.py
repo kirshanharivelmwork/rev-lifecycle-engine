@@ -176,12 +176,13 @@ async def fetch_apollo_leads(
         client = httpx.AsyncClient(timeout=20.0)
     try:
         org = session.get(Organization, org_id)
-        if org is None or not org.apollo_api_key:
+        apollo_key = decrypt_secret(org.apollo_api_key) if org else None
+        if org is None or not apollo_key:
             return {"ok": False, "error": "missing_apollo_api_key", "upserted": 0}
         payload = dict(search_params or {})
         payload.setdefault("per_page", 25)
         extra_signals = list(payload.pop("intent_signals", []) or [])
-        response = await client.post(APOLLO_SEARCH_URL, headers=_apollo_headers(org.apollo_api_key), json=payload)
+        response = await client.post(APOLLO_SEARCH_URL, headers=_apollo_headers(apollo_key), json=payload)
         handled = _handle_status(response, "apollo")
         if not handled["ok"]:
             return {**handled, "upserted": 0}

@@ -1,11 +1,5 @@
-import { PagePlaceholder } from "@/components/layout/page-placeholder";
+import { StagingQueue } from "@/components/staging/staging-queue";
 
 export default function StagingPage() {
-  return (
-    <PagePlaceholder
-      kicker="Human in the loop"
-      title="Staging & Approval Queue"
-      description="Pending CSM approve / dismiss controls for high-MRR playbooks will render here."
-    />
-  );
+  return <StagingQueue />;
 }

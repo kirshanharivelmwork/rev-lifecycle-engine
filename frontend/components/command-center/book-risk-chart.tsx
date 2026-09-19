@@ -3,9 +3,10 @@
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { RISK_COLORS, RISK_MIX } from "@/lib/command-center-data";
+import { RISK_COLORS } from "@/lib/command-center-data";
+import type { CommandCenterPayload } from "@/lib/types";
 
-export function BookRiskChart() {
+export function BookRiskChart({ data }: { data: CommandCenterPayload["risk_mix"] }) {
   return (
     <Card className="rounded-2xl border-border shadow-card">
       <CardHeader className="pb-2">
@@ -13,7 +14,7 @@ export function BookRiskChart() {
       </CardHeader>
       <CardContent className="h-[320px] pt-0">
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={RISK_MIX} barGap={2}>
+          <BarChart data={data} barGap={2}>
             <CartesianGrid stroke="#E5E7EB" vertical={false} />
             <XAxis dataKey="bin" tick={{ fill: "#4B5563", fontSize: 11 }} tickLine={false} axisLine={false} />
             <YAxis allowDecimals={false} tick={{ fill: "#4B5563", fontSize: 11 }} tickLine={false} axisLine={false} />

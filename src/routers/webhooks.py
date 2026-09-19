@@ -6,7 +6,7 @@ import json
 import os
 from typing import Any, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
@@ -172,7 +172,6 @@ def instantly_webhook(
 @limiter.limit(INGEST_LIMIT)
 async def stripe_webhook(
     request: Request,
-    background: BackgroundTasks,
     db: Session = Depends(get_db),
     x_org_id: Optional[str] = Header(default=None, alias="X-Org-Id"),
     x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
@@ -203,7 +202,7 @@ async def stripe_webhook(
             status_code=200,
             content={"status": "skipped", "reason": "duplicate", "event_id": event_id, "org_id": org.org_id},
         )
-    job = _enqueue_job(db, org, "stripe", event, background)
+    job = _enqueue_job(db, org, "stripe", event)
     return JSONResponse(
         status_code=202,
         content={

@@ -16,17 +16,18 @@ if __package__ in {None, ""}:
 
 import pandas as pd
 import requests
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from sqlalchemy.orm import Session
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
-from src.auth import AuthUser, get_current_org, require_admin_role
+from src.auth import AuthUser, get_current_org, get_current_user, require_admin_role
 from src.billing import INGEST_LIMIT, SubscriptionInactive, billing_json_response, limiter
 from src.churn_model import ChurnScoringEngine, load_or_train
-from src.database import init_db
-from src.integrations.backfill import run_historical_backfill
+from src.database import get_db, init_db
 from src.models_db import Organization
 from src.security import decrypt_secret
 from src.paths import (
@@ -39,8 +40,9 @@ from src.paths import (
     PROCESSED_DIR,
 )
 from src.retraining_pipeline import load_tenant_engine
-from src.routers import billing, customers, ingestion, webhooks
+from src.routers import billing, customers, dashboard, ingestion, webhooks
 from src.scoring import assign_risk_tier, recommend_playbook, risk_drivers
+from src.tasks import run_historical_backfill
 
 LOGGER = logging.getLogger(__name__)
 
@@ -99,6 +101,9 @@ class OrganizationSecrets(BaseModel):
     salesforce_key: Optional[str] = Field(default=None, alias="salesforce_access_token")
     stripe_secret: Optional[str] = Field(default=None, alias="stripe_webhook_secret")
     instantly_api_key: Optional[str] = None
+    slack_webhook_url: Optional[str] = None
+    resend_api_key: Optional[str] = None
+    apollo_api_key: Optional[str] = None
 
 
 def apply_organization_secrets(org: Organization, secrets: OrganizationSecrets) -> Organization:
@@ -111,6 +116,12 @@ def apply_organization_secrets(org: Organization, secrets: OrganizationSecrets) 
         org.stripe_webhook_secret = secrets.stripe_secret
     if secrets.instantly_api_key:
         org.instantly_api_key = secrets.instantly_api_key
+    if secrets.slack_webhook_url:
+        org.slack_webhook_url = secrets.slack_webhook_url
+    if secrets.resend_api_key:
+        org.resend_api_key = secrets.resend_api_key
+    if secrets.apollo_api_key:
+        org.apollo_api_key = secrets.apollo_api_key
     return org
 
 
@@ -121,6 +132,9 @@ def plaintext_organization_secrets(org: Organization) -> OrganizationSecrets:
         salesforce_key=decrypt_secret(org.salesforce_access_token),
         stripe_secret=decrypt_secret(org.stripe_webhook_secret),
         instantly_api_key=decrypt_secret(org.instantly_api_key),
+        slack_webhook_url=decrypt_secret(org.slack_webhook_url),
+        resend_api_key=decrypt_secret(org.resend_api_key),
+        apollo_api_key=decrypt_secret(org.apollo_api_key),
     )
 
 
@@ -181,6 +195,14 @@ app = FastAPI(
 )
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
+_cors_origins = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",") if origin.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.exception_handler(SubscriptionInactive)
@@ -198,6 +220,18 @@ app.include_router(webhooks.router, prefix="/api/v1")
 app.include_router(customers.router, prefix="/api/v1")
 app.include_router(billing.router, prefix="/api/v1")
 app.include_router(billing.router, prefix="/v1")
+app.include_router(dashboard.router, prefix="/api/v1")
+app.include_router(dashboard.router, prefix="/v1")
+
+
+@app.post("/api/v1/billing/create-checkout-session")
+@app.post("/v1/billing/create-checkout-session")
+def create_checkout_session(
+    user: AuthUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Return a Stripe Checkout URL for the authenticated Clerk organization."""
+    return billing.create_stripe_checkout_session(user, db)
 
 
 class HistoricalBackfillRequest(BaseModel):
@@ -219,7 +253,6 @@ class HistoricalBackfillResponse(BaseModel):
 @app.post("/api/v1/backfill", response_model=HistoricalBackfillResponse)
 def trigger_historical_backfill(
     payload: HistoricalBackfillRequest,
-    background: BackgroundTasks,
     _admin: AuthUser = Depends(require_admin_role),
     org: Organization = Depends(get_current_org),
 ) -> HistoricalBackfillResponse:
@@ -231,8 +264,7 @@ def trigger_historical_backfill(
     )
     if not stripe_key:
         raise HTTPException(status_code=400, detail="stripe_api_key is required to hydrate billing history")
-    background.add_task(
-        run_historical_backfill,
+    run_historical_backfill.delay(
         org.org_id,
         stripe_key,
         segment_access_token=payload.segment_access_token,

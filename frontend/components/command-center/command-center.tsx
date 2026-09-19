@@ -1,10 +1,26 @@
+"use client";
+
 import { ActionStream } from "@/components/command-center/action-stream";
 import { AtRiskBook } from "@/components/command-center/at-risk-book";
 import { BookRiskChart } from "@/components/command-center/book-risk-chart";
 import { KpiGrid } from "@/components/command-center/kpi-grid";
-import { TENANT } from "@/lib/command-center-data";
+import { useCommandCenter } from "@/hooks/use-command-center";
+import { formatUsd } from "@/lib/command-center-data";
 
 export function CommandCenter() {
+  const { data, error, loading } = useCommandCenter();
+
+  if (loading) {
+    return <p className="text-sm text-muted-foreground">Loading live command center…</p>;
+  }
+  if (error) {
+    return <p className="text-sm text-destructive">{error}</p>;
+  }
+  if (!data) {
+    return <p className="text-sm text-muted-foreground">Sign in to load tenant data.</p>;
+  }
+
+  const tenant = data.tenant;
   return (
     <div className="mx-auto flex max-w-[1400px] flex-col gap-6">
       <header>
@@ -15,20 +31,20 @@ export function CommandCenter() {
           Executive Revenue Command Center
         </h2>
         <p className="mt-2 text-[0.98rem] text-muted-foreground">
-          {TENANT.name} · {TENANT.subscriberCount.toLocaleString("en-US")} monitored subscribers ·
-          model {TENANT.modelVersion} · HITL threshold ${TENANT.hitlFloorUsd.toLocaleString("en-US")} ·
-          cooldown {TENANT.cooldownDays}d
+          {tenant.name} · {(tenant.subscriber_count ?? 0).toLocaleString("en-US")} monitored subscribers ·
+          model {tenant.model_version} · HITL threshold {formatUsd(tenant.hitl_mrr_threshold)} · cooldown{" "}
+          {tenant.alert_cooldown_days}d
         </p>
       </header>
 
-      <KpiGrid />
+      <KpiGrid kpis={data.kpis} subscriberCount={tenant.subscriber_count ?? 0} />
 
       <section className="grid gap-4 xl:grid-cols-[1.15fr_1fr]">
-        <ActionStream />
-        <BookRiskChart />
+        <ActionStream rows={data.action_stream} />
+        <BookRiskChart data={data.risk_mix} />
       </section>
 
-      <AtRiskBook />
+      <AtRiskBook rows={data.at_risk_book} />
     </div>
   );
 }

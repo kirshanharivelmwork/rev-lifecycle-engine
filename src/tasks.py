@@ -1,15 +1,18 @@
-"""Asynchronous ingestion workers (BackgroundTasks today; Celery/RQ-compatible)."""
+"""Celery workers for ingestion, CRM sync, dispatch, and historical backfill."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import time
 from typing import Any, Optional
 
 from src.database import get_session_factory
-from src.dispatcher import evaluate_and_trigger_actions
+from src.dispatcher import evaluate_and_trigger_actions as run_account_dispatcher
 from src.models_db import IngestionJob, Organization, utcnow
 from src.routers.account_ops import apply_stripe_event, persist_telemetry_items
+from src.worker import celery_app
 
 LOGGER = logging.getLogger(__name__)
 MAX_ATTEMPTS = 3
@@ -22,15 +25,9 @@ def _mark(job: IngestionJob, status: str, error: Optional[str] = None) -> None:
         job.completed_at = utcnow()
 
 
+@celery_app.task(name="src.tasks.process_ingestion_job")
 def process_ingestion_job(job_id: str, max_attempts: int = MAX_ATTEMPTS) -> dict[str, Any]:
-    """DB transform → XGBoost scoring → alert evaluation, with bounded retries.
-
-    Celery/RQ hook::
-
-        @shared_task(bind=True, max_retries=3)
-        def process_ingestion_job_task(self, job_id: str):
-            return process_ingestion_job(job_id)
-    """
+    """DB transform → XGBoost scoring → alert evaluation, with bounded retries."""
     last_error = None
     for attempt in range(1, max_attempts + 1):
         session = get_session_factory()()
@@ -104,30 +101,64 @@ def process_ingestion_job(job_id: str, max_attempts: int = MAX_ATTEMPTS) -> dict
     return {"ok": False, "job_id": job_id, "error": last_error}
 
 
-try:  # Optional Celery compatibility; unused unless Celery is installed.
-    from celery import shared_task
+@celery_app.task(name="src.tasks.evaluate_and_trigger_actions")
+def evaluate_and_trigger_actions(
+    account_id: str,
+    org_id: str,
+    force: bool = False,
+    session: Optional[Any] = None,
+    engine: Optional[Any] = None,
+) -> dict[str, Any]:
+    """Score one account and fire Slack / Resend / CRM. Session is in-process only."""
+    return run_account_dispatcher(
+        account_id,
+        org_id,
+        session=session,
+        engine=engine,
+        force=force,
+    )
 
-    @shared_task(bind=True, max_retries=3, name="src.tasks.process_ingestion_job")
-    def process_ingestion_job_celery(self, job_id: str) -> dict[str, Any]:  # pragma: no cover
-        try:
-            return process_ingestion_job(job_id)
-        except Exception as exc:
-            raise self.retry(exc=exc, countdown=2)
-except Exception:  # pragma: no cover
-    process_ingestion_job_celery = None  # type: ignore[assignment]
+
+@celery_app.task(name="src.tasks.process_crm_sync")
+def process_crm_sync(job_id: str) -> dict[str, Any]:
+    from src.integrations.crm import process_crm_sync_job
+
+    return process_crm_sync_job(job_id)
+
+
+@celery_app.task(name="src.tasks.push_to_instantly")
+def push_to_instantly(lead_id: str, campaign_id: str) -> dict[str, Any]:
+    from src.integrations.acquisition import push_to_instantly as _push
+
+    return asyncio.run(_push(lead_id, campaign_id))
 
 
 def enqueue_instantly_push(lead_id: str, campaign_id: str) -> None:
-    """Background Instantly dispatch for high-intent Front Door leads."""
-    import asyncio
-    import threading
+    """Queue Instantly dispatch for high-intent Front Door leads."""
+    push_to_instantly.delay(lead_id, campaign_id)
 
-    def _run() -> None:
-        from src.integrations.acquisition import push_to_instantly
 
-        asyncio.run(push_to_instantly(lead_id, campaign_id))
+@celery_app.task(name="src.tasks.run_historical_backfill")
+def run_historical_backfill(
+    org_id: str,
+    stripe_api_key: str,
+    segment_access_token: Optional[str] = None,
+    posthog_api_key: Optional[str] = None,
+    posthog_host: Optional[str] = None,
+    posthog_project_id: Optional[str] = None,
+) -> dict[str, Any]:
+    from src.integrations.backfill import run_historical_backfill as _run
 
-    threading.Thread(target=_run, daemon=True, name="instantly-push").start()
+    return asyncio.run(
+        _run(
+            org_id,
+            stripe_api_key,
+            segment_access_token=segment_access_token,
+            posthog_api_key=posthog_api_key,
+            posthog_host=posthog_host,
+            posthog_project_id=posthog_project_id,
+        )
+    )
 
 
 async def run_daily_outbound_engine(
@@ -139,10 +170,8 @@ async def run_daily_outbound_engine(
     client: Optional[Any] = None,
 ) -> dict[str, Any]:
     """Fetch Apollo ICP leads, score them, and push conversion_score > 80 to Instantly."""
-    import os
-
     from src.conversion_model import apply_lead_score, is_high_intent
-    from src.integrations.acquisition import fetch_apollo_leads, push_to_instantly
+    from src.integrations.acquisition import fetch_apollo_leads, push_to_instantly as _push
     from src.models_db import ProspectLead
     from src.rls import set_tenant_context
 
@@ -171,7 +200,7 @@ async def run_daily_outbound_engine(
             if lead.status not in {"uncontacted", "in_sequence"}:
                 continue
             if lead.status == "uncontacted":
-                result = await push_to_instantly(
+                result = await _push(
                     lead.id,
                     campaign,
                     session=session,

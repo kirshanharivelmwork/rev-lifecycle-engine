@@ -16,6 +16,9 @@ ORGANIZATION_SECRET_COLUMNS = (
     "salesforce_access_token",
     "stripe_webhook_secret",
     "instantly_api_key",
+    "slack_webhook_url",
+    "resend_api_key",
+    "apollo_api_key",
 )
 
 _fernet: Fernet | None = None

@@ -468,14 +468,17 @@ def enqueue_crm_sync(
         session = get_session_factory()()
     try:
         job = persist_crm_sync_job(session, org, account, risk_score)
-        if owns:
-            session.commit()
-        process_crm_sync_job(job.id, session=session)
+        session.flush()
+        job_id = job.id
         if owns:
             session.commit()
         else:
-            session.flush()
-        return job
+            session.commit()
+        from src.tasks import process_crm_sync
+
+        process_crm_sync.delay(job_id)
+        session.expire_all()
+        return session.get(IngestionJob, job_id)
     finally:
         if owns:
             session.close()

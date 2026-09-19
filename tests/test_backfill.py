@@ -228,10 +228,10 @@ def test_fetch_historical_product_events_mocks_without_credentials() -> None:
 
 
 def test_backfill_route_requires_admin(backfill_db, monkeypatch) -> None:
-    async def fake_run(*_args, **_kwargs):
+    def fake_delay(*_args, **_kwargs):
         return {"ok": True}
 
-    monkeypatch.setattr("src.api.run_historical_backfill", fake_run)
+    monkeypatch.setattr("src.api.run_historical_backfill.delay", fake_delay)
     member = clerk_auth_headers(org_id=ACME_ORG_ID, role="Member")
     admin = clerk_auth_headers(org_id=ACME_ORG_ID, role="Admin")
     with TestClient(app) as client:
@@ -249,11 +249,11 @@ def test_backfill_route_requires_admin(backfill_db, monkeypatch) -> None:
 def test_backfill_route_runs_worker(backfill_db, monkeypatch) -> None:
     calls = []
 
-    async def fake_run(org_id, stripe_api_key, **kwargs):
+    def fake_delay(org_id, stripe_api_key, **kwargs):
         calls.append({"org_id": org_id, "key": stripe_api_key, **kwargs})
         return {"ok": True, "org_id": org_id}
 
-    monkeypatch.setattr("src.api.run_historical_backfill", fake_run)
+    monkeypatch.setattr("src.api.run_historical_backfill.delay", fake_delay)
     headers = clerk_auth_headers(org_id=ACME_ORG_ID, role="Admin")
     with TestClient(app) as client:
         response = client.post(

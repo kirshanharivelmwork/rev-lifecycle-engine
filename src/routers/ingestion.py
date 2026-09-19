@@ -7,7 +7,7 @@ import json
 import os
 from typing import Any, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import IntegrityError
@@ -140,7 +140,6 @@ def _enqueue_job(
     org: Organization,
     source: str,
     payload: dict[str, Any],
-    background: BackgroundTasks,
 ) -> IngestionJob:
     job = IngestionJob(
         org_id=org.org_id,
@@ -152,7 +151,7 @@ def _enqueue_job(
     db.add(job)
     db.commit()
     db.refresh(job)
-    background.add_task(process_ingestion_job, job.id)
+    process_ingestion_job.delay(job.id)
     return job
 
 
@@ -184,7 +183,6 @@ class TelemetryBatch(BaseModel):
 def telemetry_webhook(
     request: Request,
     payload: TelemetryBatch,
-    background: BackgroundTasks,
     db: Session = Depends(get_db),
     x_org_id: Optional[str] = Header(default=None, alias="X-Org-Id"),
     x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
@@ -234,7 +232,7 @@ def telemetry_webhook(
             status_code=200,
             content={"status": "skipped", "reason": "duplicate", "event_id": event_id, "org_id": org.org_id},
         )
-    job = _enqueue_job(db, org, "telemetry", body, background)
+    job = _enqueue_job(db, org, "telemetry", body)
     return JSONResponse(
         status_code=202,
         content={

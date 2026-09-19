@@ -43,6 +43,9 @@ def test_organization_secrets_schema_and_aliases(tmp_path, monkeypatch) -> None:
             salesforce_key="sf-plain",
             stripe_secret="whsec_plain",
             instantly_api_key="inst-plain",
+            slack_webhook_url="https://hooks.slack.com/services/T/B/plain",
+            resend_api_key="re_plain",
+            apollo_api_key="apollo_plain",
         ),
     )
     session.add(org)
@@ -54,14 +57,21 @@ def test_organization_secrets_schema_and_aliases(tmp_path, monkeypatch) -> None:
     assert loaded.salesforce_key == "sf-plain"
     assert loaded.stripe_secret == "whsec_plain"
     assert loaded.instantly_api_key == "inst-plain"
+    assert loaded.slack_webhook_url.endswith("/plain")
+    assert loaded.resend_api_key == "re_plain"
+    assert loaded.apollo_api_key == "apollo_plain"
     dumped = plaintext_organization_secrets(loaded)
     assert dumped.hubspot_token == "hs-plain"
     assert dumped.salesforce_key == "sf-plain"
+    assert dumped.slack_webhook_url.endswith("/plain")
+    assert dumped.resend_api_key == "re_plain"
+    assert dumped.apollo_api_key == "apollo_plain"
 
     raw = session.execute(
         text(
             "SELECT hubspot_access_token, salesforce_access_token, "
-            "stripe_webhook_secret, instantly_api_key FROM organizations WHERE org_id = :oid"
+            "stripe_webhook_secret, instantly_api_key, slack_webhook_url, "
+            "resend_api_key, apollo_api_key FROM organizations WHERE org_id = :oid"
         ),
         {"oid": "org_sec"},
     ).mappings().one()
@@ -70,6 +80,9 @@ def test_organization_secrets_schema_and_aliases(tmp_path, monkeypatch) -> None:
     assert looks_like_fernet_token(raw["salesforce_access_token"])
     assert looks_like_fernet_token(raw["stripe_webhook_secret"])
     assert looks_like_fernet_token(raw["instantly_api_key"])
+    assert looks_like_fernet_token(raw["slack_webhook_url"])
+    assert looks_like_fernet_token(raw["resend_api_key"])
+    assert looks_like_fernet_token(raw["apollo_api_key"])
     session.close()
     reset_engine()
 
@@ -84,23 +97,32 @@ def test_migrate_plaintext_secrets(tmp_path, monkeypatch) -> None:
             text(
                 "INSERT INTO organizations (org_id, name, api_key, plan_tier, created_at, "
                 "alert_cooldown_days, hitl_mrr_threshold, subscription_status, "
-                "hubspot_access_token, salesforce_access_token, stripe_webhook_secret, instantly_api_key) "
+                "hubspot_access_token, salesforce_access_token, stripe_webhook_secret, instantly_api_key, "
+                "slack_webhook_url, resend_api_key, apollo_api_key) "
                 "VALUES ('org_legacy', 'Legacy', 'k', 'dev', CURRENT_TIMESTAMP, 14, 1000, 'active', "
-                "'hs-old', 'sf-old', 'whsec-old', 'inst-old')"
+                "'hs-old', 'sf-old', 'whsec-old', 'inst-old', "
+                "'https://hooks.slack.com/legacy', 're-old', 'apollo-old')"
             )
         )
     migrate_plaintext_secrets(engine)
     with engine.connect() as conn:
         row = conn.execute(
             text(
-                "SELECT hubspot_access_token, instantly_api_key FROM organizations WHERE org_id = 'org_legacy'"
+                "SELECT hubspot_access_token, instantly_api_key, slack_webhook_url, "
+                "resend_api_key, apollo_api_key FROM organizations WHERE org_id = 'org_legacy'"
             )
         ).mappings().one()
     assert looks_like_fernet_token(row["hubspot_access_token"])
     assert decrypt_secret(row["instantly_api_key"]) == "inst-old"
+    assert looks_like_fernet_token(row["slack_webhook_url"])
+    assert decrypt_secret(row["resend_api_key"]) == "re-old"
+    assert decrypt_secret(row["apollo_api_key"]) == "apollo-old"
     session = get_session_factory()()
     org = session.get(Organization, "org_legacy")
     assert org.hubspot_access_token == "hs-old"
+    assert org.slack_webhook_url == "https://hooks.slack.com/legacy"
+    assert org.resend_api_key == "re-old"
+    assert org.apollo_api_key == "apollo-old"
     session.close()
     reset_engine()
     reset_fernet_cache()

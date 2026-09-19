@@ -4,10 +4,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 export PYTHONPATH="${PYTHONPATH:-$ROOT}"
-export STREAMLIT_BROWSER_GATHER_USAGE_STATS="${STREAMLIT_BROWSER_GATHER_USAGE_STATS:-false}"
+export PORT="${PORT:-3000}"
+RUN_CELERY="${RUN_CELERY:-1}"
 
 API_PID=""
 UI_PID=""
+WORKER_PID=""
 
 cleanup() {
   if [[ -n "${API_PID}" ]]; then
@@ -15,6 +17,9 @@ cleanup() {
   fi
   if [[ -n "${UI_PID}" ]]; then
     kill "${UI_PID}" 2>/dev/null || true
+  fi
+  if [[ -n "${WORKER_PID}" ]]; then
+    kill "${WORKER_PID}" 2>/dev/null || true
   fi
 }
 
@@ -64,8 +69,20 @@ PY
 uvicorn src.api:app --host 0.0.0.0 --port 8000 &
 API_PID=$!
 
-streamlit run app/dashboard.py --server.port 8501 --server.address 0.0.0.0 --server.headless true &
+if [[ "${RUN_CELERY}" == "1" || "${RUN_CELERY}" == "true" ]]; then
+  celery -A src.worker.celery_app worker --loglevel=info &
+  WORKER_PID=$!
+fi
+
+(
+  cd "$ROOT/frontend"
+  ./node_modules/.bin/next start --hostname 0.0.0.0 --port "${PORT}"
+) &
 UI_PID=$!
 
-wait -n "${API_PID}" "${UI_PID}" || true
+if [[ -n "${WORKER_PID}" ]]; then
+  wait -n "${API_PID}" "${UI_PID}" "${WORKER_PID}" || true
+else
+  wait -n "${API_PID}" "${UI_PID}" || true
+fi
 wait || true

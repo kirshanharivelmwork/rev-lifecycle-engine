@@ -1,12 +1,15 @@
 "use client";
 
+import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/nextjs";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { LayoutDashboard, DoorOpen, ShieldCheck, Settings2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { NAV_ITEMS, TENANT } from "@/lib/command-center-data";
+import { useTenant } from "@/hooks/use-tenant";
+import { NAV_ITEMS } from "@/lib/command-center-data";
 import { cn } from "@/lib/utils";
 
 const ICONS = {
@@ -18,6 +21,7 @@ const ICONS = {
 
 export function AppSidebar() {
   const pathname = usePathname();
+  const tenant = useTenant();
 
   return (
     <aside className="flex h-full w-72 shrink-0 flex-col border-r border-sidebar-border bg-sidebar px-4 py-6">
@@ -32,13 +36,26 @@ export function AppSidebar() {
 
       <div className="mt-6 rounded-2xl border border-border bg-card p-3 shadow-card">
         <p className="text-xs font-medium text-muted-foreground">Organization</p>
-        <p className="mt-1 text-sm font-semibold">{TENANT.name}</p>
-        <p className="mt-1 font-mono text-xs text-muted-foreground">
-          {TENANT.orgId} · {TENANT.planTier} plan
-        </p>
-        <Badge className="mt-3 bg-primary/10 text-primary hover:bg-primary/10" variant="secondary">
-          Static UI · no API yet
-        </Badge>
+        <SignedOut>
+          <p className="mt-1 text-sm font-semibold">Sign in to load your tenant</p>
+          <SignInButton mode="redirect">
+            <Button className="mt-3 w-full" size="sm">
+              Sign in
+            </Button>
+          </SignInButton>
+        </SignedOut>
+        <SignedIn>
+          <p className="mt-1 text-sm font-semibold">{tenant?.name ?? "Loading…"}</p>
+          <p className="mt-1 font-mono text-xs text-muted-foreground">
+            {tenant ? `${tenant.org_id} · ${tenant.plan_tier} plan` : "Fetching organization"}
+          </p>
+          <div className="mt-3 flex items-center justify-between">
+            <Badge className="bg-primary/10 text-primary hover:bg-primary/10" variant="secondary">
+              Live API
+            </Badge>
+            <UserButton afterSignOutUrl="/sign-in" />
+          </div>
+        </SignedIn>
       </div>
 
       <Separator className="my-6" />

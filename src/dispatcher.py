@@ -21,6 +21,7 @@ from src.models_db import (
     Organization,
     utcnow,
 )
+from src.security import decrypt_secret
 from src.outcome_tracker import record_intervention_outcome
 from src.paths import (
     AT_RISK_THRESHOLD,
@@ -312,8 +313,10 @@ def evaluate_and_trigger_actions(
         org = session.get(Organization, org_id)
         cooldown_days = _org_cooldown_days(org, account)
         hitl_floor = _org_hitl_threshold(org)
-        slack_url = (org.slack_webhook_url if org else None) or os.getenv("SLACK_WEBHOOK_URL") or os.getenv("WEBHOOK_URL")
-        resend_key = (org.resend_api_key if org else None) or os.getenv("RESEND_API_KEY")
+        slack_url = (
+            decrypt_secret(org.slack_webhook_url) if org else None
+        ) or os.getenv("SLACK_WEBHOOK_URL") or os.getenv("WEBHOOK_URL")
+        resend_key = (decrypt_secret(org.resend_api_key) if org else None) or os.getenv("RESEND_API_KEY")
         if engine is None:
             engine, _ = load_or_train(tune=False, persist=True)
         scored = _score_account(session, account, engine)
@@ -408,8 +411,8 @@ def approve_pending_dispatch(
             session,
             account,
             scored,
-            slack_url=(org.slack_webhook_url if org else None) or os.getenv("SLACK_WEBHOOK_URL"),
-            resend_api_key=(org.resend_api_key if org else None) or os.getenv("RESEND_API_KEY"),
+            slack_url=(decrypt_secret(org.slack_webhook_url) if org else None) or os.getenv("SLACK_WEBHOOK_URL"),
+            resend_api_key=(decrypt_secret(org.resend_api_key) if org else None) or os.getenv("RESEND_API_KEY"),
             cooldown_days=_org_cooldown_days(org, account),
             org=org,
         )
