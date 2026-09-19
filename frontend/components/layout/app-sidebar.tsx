@@ -1,6 +1,6 @@
 "use client";
 
-import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/nextjs";
+import { OrganizationSwitcher, SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/nextjs";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { LayoutDashboard, DoorOpen, ShieldCheck, Settings2 } from "lucide-react";
@@ -45,9 +45,26 @@ export function AppSidebar() {
           </SignInButton>
         </SignedOut>
         <SignedIn>
-          <p className="mt-1 text-sm font-semibold">{tenant?.name ?? "Loading…"}</p>
+          <div className="mt-3">
+            <OrganizationSwitcher
+              hidePersonal={true}
+              afterSelectOrganizationUrl="/"
+              afterCreateOrganizationUrl="/"
+              appearance={{
+                elements: {
+                  rootBox: "w-full",
+                  organizationSwitcherTrigger:
+                    "w-full justify-between rounded-xl border border-border bg-background px-2.5 py-1.5 text-sm font-semibold text-foreground shadow-none hover:bg-muted",
+                  organizationSwitcherTriggerIcon: "text-muted-foreground",
+                  organizationPreviewMainIdentifier: "text-sm font-semibold text-foreground",
+                  organizationPreviewSecondaryIdentifier: "font-mono text-xs text-muted-foreground",
+                },
+              }}
+            />
+          </div>
+          <p className="mt-2 text-sm font-semibold">{tenant?.name ?? "Select a workspace"}</p>
           <p className="mt-1 font-mono text-xs text-muted-foreground">
-            {tenant ? `${tenant.org_id} · ${tenant.plan_tier} plan` : "Fetching organization"}
+            {tenant ? `${tenant.org_id} · ${tenant.plan_tier} plan` : "JWT needs an active org"}
           </p>
           <div className="mt-3 flex items-center justify-between">
             <Badge className="bg-primary/10 text-primary hover:bg-primary/10" variant="secondary">
