@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { useAuthedFetch } from "@/hooks/use-authed-fetch";
-import type { BackfillResponse, SettingsPayload } from "@/lib/types";
+import type { BackfillResponse, CsvIngestResponse, SettingsPayload } from "@/lib/types";
 
 export function useTenantSettings() {
   const { request, isLoaded, isSignedIn } = useAuthedFetch();
@@ -12,6 +12,7 @@ export function useTenantSettings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
+  const [scoringCsv, setScoringCsv] = useState(false);
 
   const reload = useCallback(async (options?: { silent?: boolean }) => {
     if (!isLoaded || !isSignedIn) {
@@ -91,6 +92,30 @@ export function useTenantSettings() {
     [reload, request],
   );
 
+  const uploadCsvBook = useCallback(
+    async (file: File) => {
+      setScoringCsv(true);
+      setError(null);
+      try {
+        const body = new FormData();
+        body.append("file", file);
+        const payload = await request<CsvIngestResponse>("/api/v1/ingestion/csv", {
+          method: "POST",
+          body,
+        });
+        await reload({ silent: true });
+        return payload;
+      } catch (exc) {
+        const message = exc instanceof Error ? exc.message : "Failed to score CSV book";
+        setError(message);
+        throw exc;
+      } finally {
+        setScoringCsv(false);
+      }
+    },
+    [reload, request],
+  );
+
   const deleteCustomer = useCallback(
     async (customerExternalId: string) => {
       await request(`/api/v1/customers/${encodeURIComponent(customerExternalId)}`, { method: "DELETE" });
@@ -99,5 +124,5 @@ export function useTenantSettings() {
     [reload, request],
   );
 
-  return { data, error, loading, saving, backfilling, isLoaded, isSignedIn, reload, save, runBackfill, deleteCustomer };
+  return { data, error, loading, saving, backfilling, scoringCsv, isLoaded, isSignedIn, reload, save, runBackfill, uploadCsvBook, deleteCustomer };
 }

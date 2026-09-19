@@ -101,6 +101,21 @@ def test_billing_and_dispatcher_require_admin(auth_db, processed_frame) -> None:
     assert "dispatched" in dispatch_ok.json()
 
 
+def test_tenant_endpoint_returns_auth_user_role(auth_db) -> None:
+    member = clerk_auth_headers(org_id=ACME_ORG_ID, role="Member", sub="user_member")
+    admin = clerk_auth_headers(org_id=ACME_ORG_ID, role="Admin", sub="user_admin")
+    with TestClient(app) as client:
+        member_resp = client.get("/api/v1/tenant", headers=member)
+        admin_resp = client.get("/api/v1/tenant", headers=admin)
+    assert member_resp.status_code == 200, member_resp.text
+    assert member_resp.json()["org_id"] == ACME_ORG_ID
+    assert member_resp.json()["role"] == "Member"
+    assert member_resp.json()["is_admin"] is False
+    assert admin_resp.status_code == 200, admin_resp.text
+    assert admin_resp.json()["role"] == "Admin"
+    assert admin_resp.json()["is_admin"] is True
+
+
 def test_get_current_user_rejects_missing_and_accepts_member_on_predict(auth_db, processed_frame) -> None:
     engine = ChurnScoringEngine()
     engine.fit(processed_frame.head(200), tune=False)

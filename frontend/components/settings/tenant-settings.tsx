@@ -22,7 +22,8 @@ const EMPTY_SECRETS = {
 const ADMIN_REASON = "Admin access required";
 
 export function TenantSettings() {
-  const { data, error, loading, saving, backfilling, save, runBackfill, deleteCustomer, reload } = useTenantSettings();
+  const { data, error, loading, saving, backfilling, scoringCsv, save, runBackfill, uploadCsvBook, deleteCustomer, reload } =
+    useTenantSettings();
   const { isAdmin, isLoaded: roleLoaded } = useOrgRole();
   const [cooldown, setCooldown] = useState(14);
   const [hitl, setHitl] = useState(1000);
@@ -35,6 +36,8 @@ export function TenantSettings() {
   const [saved, setSaved] = useState(false);
   const [scoring, setScoring] = useState(false);
   const [backfillMessage, setBackfillMessage] = useState<string | null>(null);
+  const [csvMessage, setCsvMessage] = useState<string | null>(null);
+  const [dragActive, setDragActive] = useState(false);
 
   useEffect(() => {
     if (!data) {
@@ -59,7 +62,7 @@ export function TenantSettings() {
     .filter(([, enabled]) => enabled)
     .map(([key]) => key);
   const emptyBook = (data.tenant.subscriber_count ?? 0) === 0;
-  const inputsDisabled = !isAdmin || saving || scoring || backfilling;
+  const inputsDisabled = !isAdmin || saving || scoring || scoringCsv || backfilling;
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -109,6 +112,25 @@ export function TenantSettings() {
     }
   }
 
+  async function onCsvFile(file: File | undefined) {
+    if (!isAdmin || !file) {
+      return;
+    }
+    setCsvMessage(null);
+    try {
+      const result = await uploadCsvBook(file);
+      if (result.status === "skipped") {
+        setCsvMessage("This CSV was already scored for this workspace. Open the Command Center to review.");
+        return;
+      }
+      setCsvMessage(
+        `Scored ${result.assessments_written ?? 0} accounts. Open the Command Center to review the 48-hour diagnostic.`,
+      );
+    } catch {
+      setCsvMessage(null);
+    }
+  }
+
   async function onDeleteCustomer() {
     if (!isAdmin) {
       return;
@@ -144,10 +166,60 @@ export function TenantSettings() {
           <CardDescription>Compact Day-1 path for a paying design partner.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-1 text-sm text-muted-foreground">
-          <p>1. Stripe historical backfill (required for Command Center scores).</p>
+          <p>1. Score a combined CSV book (no Stripe secret required) or run Stripe historical backfill.</p>
           <p>2. Optional Segment / PostHog token if you have product analytics history.</p>
           <p>3. Slack incoming webhook and Resend API key for save motions.</p>
           <p>4. HITL MRR floor (accounts above it wait in Staging).</p>
+        </CardContent>
+      </Card>
+
+      <Card className="rounded-2xl border-border shadow-card">
+        <CardHeader>
+          <CardTitle>Score CSV Book</CardTitle>
+          <CardDescription>
+            Primary 48-hour diagnostic. Upload the combined billing + telemetry CSV (customer_id, channel, MRR, logins,
+            adoption, tickets, inactivity). We upsert accounts, score churn, and skip duplicate files.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <label
+            className={`relative flex min-h-32 cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed px-4 py-6 text-center text-sm ${
+              dragActive ? "border-primary bg-primary/5" : "border-input bg-muted/30"
+            } ${inputsDisabled ? "cursor-not-allowed opacity-60" : ""}`}
+            onDragOver={(event) => {
+              event.preventDefault();
+              if (!inputsDisabled) {
+                setDragActive(true);
+              }
+            }}
+            onDragLeave={() => setDragActive(false)}
+            onDrop={(event) => {
+              event.preventDefault();
+              setDragActive(false);
+              if (inputsDisabled) {
+                return;
+              }
+              void onCsvFile(event.dataTransfer.files?.[0]);
+            }}
+          >
+            <span className="font-medium text-foreground">
+              {scoringCsv ? "Scoring your CSV book…" : "Drop a .csv here or choose a file"}
+            </span>
+            <span className="mt-1 text-muted-foreground">Combined acquisition + telemetry extract</span>
+            <input
+              className="absolute h-0 w-0 overflow-hidden opacity-0"
+              type="file"
+              accept=".csv,text/csv"
+              disabled={inputsDisabled}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                void onCsvFile(file);
+              }}
+            />
+          </label>
+          {!isAdmin ? <p className="text-sm text-muted-foreground">{ADMIN_REASON}</p> : null}
+          {csvMessage ? <p className="text-sm text-primary">{csvMessage}</p> : null}
         </CardContent>
       </Card>
 
@@ -156,8 +228,8 @@ export function TenantSettings() {
           <CardHeader>
             <CardTitle>Day-1 empty book</CardTitle>
             <CardDescription>
-              This workspace has no customers yet. Paste a Stripe secret key and run a historical backfill to hydrate and
-              score your book.
+              This workspace has no customers yet. Score a CSV book above, or paste a Stripe secret key and run a
+              historical backfill.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
@@ -416,4 +488,12 @@ export function TenantSettings() {
       </Card>
     </div>
   );
+}
+
+async function copyText(value: string) {
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch {
+    // Clipboard can fail in insecure contexts; ignore.
+  }
 }

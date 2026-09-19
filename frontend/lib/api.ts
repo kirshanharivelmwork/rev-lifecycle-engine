@@ -21,7 +21,7 @@ export function isBillingBlocked(error: unknown): boolean {
 export async function apiFetch<T>(path: string, token: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   headers.set("Authorization", `Bearer ${token}`);
-  if (!headers.has("Content-Type") && init?.body) {
+  if (!headers.has("Content-Type") && typeof init?.body === "string") {
     headers.set("Content-Type", "application/json");
   }
   const response = await fetch(`${API_BASE}${path}`, {

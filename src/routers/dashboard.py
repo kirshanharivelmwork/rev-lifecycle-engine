@@ -309,10 +309,15 @@ def patch_tenant_settings(
 
 @router.get("/tenant")
 def get_tenant(
-    _user: AuthUser = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user),
     org: Organization = Depends(get_current_org),
 ) -> dict[str, Any]:
-    return _tenant_payload(org)
+    """Tenant summary plus the Clerk JWT role from the same AuthUser dependency."""
+    return {
+        **_tenant_payload(org),
+        "role": user.role,
+        "is_admin": user.is_admin,
+    }
 
 
 def _latest_campaign_by_lead(session: Session, org_id: str) -> dict[str, OutboundCampaign]:

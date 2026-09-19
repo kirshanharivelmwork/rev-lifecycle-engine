@@ -151,13 +151,13 @@ export function CommandCenter() {
           <CardHeader>
             <CardTitle>Your book is empty</CardTitle>
             <CardDescription>
-              A new Clerk workspace has no customers until you backfill Stripe history. Paste a Stripe API key on
-              Settings and run historical backfill to score the book.
+              A new Clerk workspace has no customers until you score a CSV book or backfill Stripe history. Open Settings
+              to upload a combined CSV (no Stripe secret required).
             </CardDescription>
           </CardHeader>
           <CardContent>
             <Link className="text-sm font-medium text-primary underline-offset-4 hover:underline" href="/settings">
-              Open Settings to run historical backfill
+              Open Settings to score a CSV book
             </Link>
           </CardContent>
         </Card>

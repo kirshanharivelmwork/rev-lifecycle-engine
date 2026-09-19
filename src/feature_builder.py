@@ -52,6 +52,20 @@ def build_feature_row(session: Session, account: CustomerAccount, now: datetime 
     adoption = min(10.0, 1.5 + 1.4 * len(unique_features))
     if days_since > 21:
         adoption = max(0.0, adoption - 2.5)
+    cac_usd = 500.0
+    sales_touchpoints = 4
+    ticket_count = len(tickets) + len(failures)
+
+    snapshots = [e for e in events if e.event_name == "csv_snapshot"]
+    if snapshots:
+        latest = max(snapshots, key=lambda event: event.timestamp or now)
+        props = latest.properties or {}
+        avg_weekly_logins = float(props.get("avg_weekly_logins", avg_weekly_logins))
+        adoption = float(props.get("feature_adoption_score", adoption))
+        days_since = int(props.get("days_since_last_login", days_since))
+        ticket_count = int(props.get("support_tickets_raised", ticket_count))
+        cac_usd = float(props.get("cac_usd", cac_usd))
+        sales_touchpoints = int(props.get("sales_touchpoints", sales_touchpoints))
 
     channel = account.channel if account.channel else "Paid Search"
     contract = account.contract_type if account.contract_type in {"Monthly", "Annual"} else "Monthly"
@@ -74,11 +88,11 @@ def build_feature_row(session: Session, account: CustomerAccount, now: datetime 
             "contract_type": contract,
             "avg_weekly_logins": avg_weekly_logins,
             "feature_adoption_score": round(adoption, 2),
-            "support_tickets_raised": len(tickets) + len(failures),
+            "support_tickets_raised": ticket_count,
             "days_since_last_login": inactivity,
             "monthly_recurring_revenue": float(account.mrr or 0.0),
-            "cac_usd": 500.0,
-            "sales_touchpoints": 4,
+            "cac_usd": cac_usd,
+            "sales_touchpoints": sales_touchpoints,
             "days_until_renewal": days_until_renewal,
             "contract_renewal_urgency_ratio": urgency_ratio,
         }

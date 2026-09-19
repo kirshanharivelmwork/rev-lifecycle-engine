@@ -2,9 +2,9 @@
 
 [![Live Command Center](https://img.shields.io/badge/Live-Command%20Center-0ea5e9)](https://rev-lifecycle-engine-production.up.railway.app)
 [![Stripe ingestion](https://img.shields.io/badge/Stripe-webhook%20%2Fapi%2Fv1%2Fwebhooks%2Fstripe-635bff)](https://rev-lifecycle-engine-production.up.railway.app/api/v1/webhooks/stripe)
-[![Test status](https://img.shields.io/badge/tests-110%20passing-22c55e)](#testing)
+[![Test status](https://img.shields.io/badge/tests-115%20passing-22c55e)](#testing)
 
-**Production (Railway):** [Executive Command Center](https://rev-lifecycle-engine-production.up.railway.app) · Stripe ingest [`POST /api/v1/webhooks/stripe`](https://rev-lifecycle-engine-production.up.railway.app/api/v1/webhooks/stripe) · **110** unit & integration tests passing
+**Production (Railway):** [Executive Command Center](https://rev-lifecycle-engine-production.up.railway.app) · Stripe ingest [`POST /api/v1/webhooks/stripe`](https://rev-lifecycle-engine-production.up.railway.app/api/v1/webhooks/stripe) · **115** unit & integration tests passing
 
 **Production stack:** FastAPI + Next.js + Clerk JWT. Railway serves the Next.js UI on `$PORT` (typically 3000) and FastAPI internally on port 8000 (`bin/start.sh`). Authenticated product APIs expect `Authorization: Bearer <Clerk JWT>`. Streamlit (`app/dashboard.py`) remains in the repo as a legacy local analytics notebook UI — it is **not** the production product.
 
@@ -84,7 +84,7 @@ flowchart LR
 
 Unknown channels or missing CAC can be filled with documented defaults (`cac_usd = 500`, `sales_touchpoints = 4`) after you label the assumption in the memo.
 
-**Hours 0–8 — Pipeline.** Drop files into `data/raw/`, run `python3 -m src.data_pipeline`. This validates schemas, inner-joins on `customer_id`, and engineers LTV:CAC, inactivity, engagement, `days_until_renewal`, and `contract_renewal_urgency_ratio`.
+**Hours 0–8 — Pipeline (in-app).** Admin uploads the combined CSV in **Settings → Score CSV Book** (`POST /api/v1/ingestion/csv`). The API validates the extract, upserts `CustomerAccount` + `TelemetryEvent` rows for the Clerk org, and immediately writes `ChurnAssessment` scores. Duplicate file bytes are skipped (idempotent). Buyers who will paste a Stripe secret can still use historical backfill instead.
 
 **Hours 8–24 — Inference.** `python3 -m src.stats_engine` prints Welch t-test (adoption) and chi-square (channel × churn). `python3 -m src.churn_model` fits logistic + XGBoost (or Random Forest fallback) and writes `data/processed/churn_risk_alerts.csv` for still-active accounts with \(p \ge 0.65\).
 
@@ -219,6 +219,7 @@ Early-warning output: `data/processed/churn_risk_alerts.csv` (active customers w
 ```
 .
 ├── frontend/               Next.js Command Center (Clerk JWT)
+├── migrations/             Alembic revisions (`script_location`; not named alembic/)
 ├── app/
 │   └── dashboard.py        Legacy Streamlit UI (local analytics only)
 ├── data/
@@ -413,6 +414,11 @@ curl -s -X POST http://127.0.0.1:8000/api/v1/webhooks/stripe \
   -H "Stripe-Signature: t=…,v1=…" \
   -d '{"type":"customer.created","data":{"object":{"id":"cus_123","metadata":{"channel":"Paid Search","mrr":199,"org_id":"org_acme"}}}}'
 
+# Combined CSV diagnostic (Admin JWT, multipart)
+curl -s -X POST http://127.0.0.1:8000/api/v1/ingestion/csv \
+  -H "Authorization: Bearer <Clerk JWT>" \
+  -F "file=@book.csv"
+
 # Product telemetry (Segment/PostHog batch)
 curl -s -X POST http://127.0.0.1:8000/api/v1/webhooks/telemetry \
   -H "Content-Type: application/json" \
@@ -458,6 +464,7 @@ Self-serve Growth billing is Clerk-authenticated Stripe Checkout:
 | `DATABASE_URL` | Postgres in production; SQLite locally |
 | `REDIS_URL` | Celery broker |
 | `ENCRYPTION_KEY` | Fernet for Slack/Resend/Apollo/CRM tokens |
+| `SENTRY_DSN` / `NEXT_PUBLIC_SENTRY_DSN` | Optional Sentry. FastAPI and Next.js initialize only when the matching DSN is set; auth headers and secrets are stripped |
 | `CORS_ORIGINS` | Comma-separated browser origins |
 | `PUBLIC_API_URL` | Host copied into Settings webhook URLs |
 
@@ -471,7 +478,7 @@ Do not rely only on boot-time `ALTER TABLE … ADD COLUMN` for new work. Apply S
 alembic upgrade head
 ```
 
-`bin/start.sh` waits for Postgres, then runs `stamp_existing_then_upgrade()` (`src/schema_migrations.py`): if the database already has application tables (demo seed) but no `alembic_version` row, it runs **`alembic stamp head`** before **`alembic upgrade head`**. Empty databases skip stamp and upgrade normally. The first revision (`001_initial`) matches the current `src/models_db.py` models.
+Revision scripts live in `migrations/` (`alembic.ini` `script_location = migrations`) so the folder does not shadow the PyPI `alembic` package. `bin/start.sh` waits for Postgres, then runs `stamp_existing_then_upgrade()` (`src/schema_migrations.py`): if the database already has application tables (demo seed) but no `alembic_version` row, it runs **`alembic stamp head`** before **`alembic upgrade head`**. Empty databases skip stamp and upgrade normally. The first revision (`001_initial`) matches the current `src/models_db.py` models.
 
 ### Postgres backups
 
@@ -527,8 +534,8 @@ The Next.js UI loads the live tenant book from FastAPI. It exposes:
 
 - Command Center KPIs, action stream, and at-risk book
 - Front Door acquisition table, high-intent count, and Run outbound
-- HITL staging with Admin-only Approve / Dismiss
-- Settings integrations plus Day-1 Stripe historical backfill
+- HITL staging with Admin-only Approve / Dismiss (gated by `GET /api/v1/tenant` `is_admin`, the same FastAPI `AuthUser` role as the API)
+- Settings: **Score CSV Book** (48-hour diagnostic) plus integrations and optional Day-1 Stripe historical backfill
 
 Legacy Streamlit (`streamlit run app/dashboard.py`) still plots the offline CSV book for local science work. It is not wired into Clerk, Checkout, or Railway `$PORT`.
 
@@ -619,7 +626,7 @@ macOS note: XGBoost wheels need OpenMP (`brew install libomp`). The scorer falls
 
 ## Testing
 
-`python3 -m pytest` currently runs **110** passing tests across pipeline, auth, dashboard, Checkout, webhooks, acquisition, billing, backfill scoring, jobs, health, and Alembic. Representative coverage:
+`python3 -m pytest` currently runs **115** passing tests across pipeline, auth, dashboard, CSV ingest, Checkout, webhooks, acquisition, billing, backfill scoring, jobs, health, Sentry, and Alembic. Representative coverage:
 
 | Test | Asserts |
 | --- | --- |
@@ -635,6 +642,9 @@ macOS note: XGBoost wheels need OpenMP (`brew install libomp`). The scorer falls
 | `test_stripe_webhook_smoke_creates_assessment` | Signed/insecure test webhook → 202 → ChurnAssessment |
 | `test_alembic_upgrade_head` | `alembic upgrade head` creates the current schema |
 | `test_stamp_then_upgrade_on_existing_tables` | Seeded DBs are stamped before upgrade |
+| `test_tenant_endpoint_returns_auth_user_role` | `GET /api/v1/tenant` returns `role` / `is_admin` from FastAPI `AuthUser` |
+| `test_csv_upload_writes_churn_assessments` | Admin CSV upload upserts accounts/telemetry and writes `ChurnAssessment` rows; duplicate file is skipped |
+| `test_init_sentry_noop_without_dsn` | Sentry does not initialize unless `SENTRY_DSN` is set |
 | `test_predict_returns_valid_payload` | `POST /v1/predict` returns HTTP 200, probability ∈ [0, 1], playbook, ARR at risk |
 | `test_create_checkout_session_returns_stripe_url` | Clerk JWT creates a Stripe Checkout session for the org |
 | `test_confirm_checkout_session_activates_paid_org` | `/?session_id=...` confirm path sets `subscription_status=active` |

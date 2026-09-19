@@ -1,4 +1,8 @@
-"""Alembic upgrade head matches current SQLAlchemy models."""
+"""Alembic upgrade head matches current SQLAlchemy models.
+
+Scripts are loaded from ``migrations/`` so ``from alembic import command``
+resolves the PyPI package, not a local directory.
+"""
 
 from __future__ import annotations
 

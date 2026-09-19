@@ -7,6 +7,8 @@ export type TenantSummary = {
   alert_cooldown_days: number;
   subscription_status?: string;
   subscriber_count?: number;
+  role?: string;
+  is_admin?: boolean;
 };
 
 export type CommandCenterPayload = {
@@ -131,6 +133,19 @@ export type AcquisitionPayload = {
   prospect_count: number;
   sequence_status: Record<string, number>;
   prospects: AcquisitionProspect[];
+};
+
+export type CsvIngestResponse = {
+  ok: boolean;
+  accepted?: boolean;
+  status: string;
+  reason?: string;
+  org_id: string;
+  event_id?: string;
+  accounts_upserted?: number;
+  assessments_written?: number;
+  account_count?: number;
+  assessment_count?: number;
 };
 
 export type BackfillResponse = {

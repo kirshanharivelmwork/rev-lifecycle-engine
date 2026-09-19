@@ -3,6 +3,7 @@ import { ClerkProvider } from "@clerk/nextjs";
 import { IBM_Plex_Sans } from "next/font/google";
 
 import { AppShell } from "@/components/layout/app-shell";
+import { SentryInit } from "@/components/sentry-init";
 
 import "./globals.css";
 
@@ -26,6 +27,7 @@ export default function RootLayout({
     <ClerkProvider>
       <html lang="en">
         <body className={`${ibmPlexSans.variable} font-sans antialiased`}>
+          <SentryInit />
           <AppShell>{children}</AppShell>
         </body>
       </html>

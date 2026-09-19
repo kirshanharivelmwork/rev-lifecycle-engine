@@ -100,3 +100,58 @@ def header_is_sensitive(name: str) -> bool:
     if lowered in _SENSITIVE_HEADERS:
         return True
     return any(key in lowered for key in _SENSITIVE_KEYS)
+
+
+def _redact_sentry_mapping(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            lowered = str(key).lower()
+            if lowered in _SENSITIVE_HEADERS or any(token in lowered for token in _SENSITIVE_KEYS):
+                redacted[key] = "[filtered]"
+            else:
+                redacted[key] = _redact_sentry_mapping(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_sentry_mapping(item) for item in value]
+    return value
+
+
+def sentry_before_send(event: dict[str, Any], _hint: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Drop auth headers, cookies, and secret-shaped fields before they leave the process."""
+    request = event.get("request")
+    if isinstance(request, dict):
+        headers = request.get("headers")
+        if isinstance(headers, dict):
+            request["headers"] = _redact_sentry_mapping(headers)
+        elif isinstance(headers, list):
+            cleaned = []
+            for item in headers:
+                if isinstance(item, (list, tuple)) and len(item) >= 2 and header_is_sensitive(str(item[0])):
+                    cleaned.append([item[0], "[filtered]"])
+                else:
+                    cleaned.append(item)
+            request["headers"] = cleaned
+        request.pop("cookies", None)
+        if "data" in request:
+            request["data"] = _redact_sentry_mapping(request["data"])
+        event["request"] = request
+    for key in ("extra", "contexts", "user"):
+        if isinstance(event.get(key), dict):
+            event[key] = _redact_sentry_mapping(event[key])
+    return event
+
+
+def init_sentry() -> bool:
+    """Initialize Sentry only when SENTRY_DSN is set. Never attach PII or auth."""
+    dsn = (os.getenv("SENTRY_DSN") or "").strip()
+    if not dsn:
+        return False
+    import sentry_sdk
+
+    sentry_sdk.init(
+        dsn=dsn,
+        send_default_pii=False,
+        before_send=sentry_before_send,
+    )
+    return True

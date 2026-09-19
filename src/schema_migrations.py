@@ -1,4 +1,8 @@
-"""Alembic helpers that are safe on empty and already-seeded databases."""
+"""Alembic helpers that are safe on empty and already-seeded databases.
+
+Migration scripts live in ``migrations/`` (see ``alembic.ini`` ``script_location``)
+so the local folder does not shadow the PyPI ``alembic`` package.
+"""
 
 from __future__ import annotations
 

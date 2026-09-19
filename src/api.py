@@ -43,7 +43,7 @@ from src.retraining_pipeline import load_tenant_engine
 from src.routers import billing, customers, dashboard, ingestion, jobs, webhooks
 from src.scoring import assign_risk_tier, recommend_playbook, risk_drivers
 from src.tasks import run_historical_backfill
-from src.observability import RequestIdMiddleware, configure_logging
+from src.observability import RequestIdMiddleware, configure_logging, init_sentry
 from src.worker import redis_url
 
 
@@ -208,6 +208,7 @@ def get_predict_engine(
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     configure_logging()
+    init_sentry()
     init_db()
     yield
 

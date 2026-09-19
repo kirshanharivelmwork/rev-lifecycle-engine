@@ -7,13 +7,13 @@ import json
 import os
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from src.auth import hash_api_key
+from src.auth import AuthUser, hash_api_key, require_admin_role, get_current_org
 from src.billing import INGEST_LIMIT, limiter, raise_if_inactive
 from src.database import get_db
 from src.models_db import IdempotentEvent, IngestionJob, Organization, utcnow
@@ -244,3 +244,23 @@ def telemetry_webhook(
             "event_id": event_id,
         },
     )
+
+
+@router.post("/ingestion/csv")
+@limiter.limit(INGEST_LIMIT)
+async def upload_csv_book(
+    request: Request,
+    file: UploadFile = File(...),
+    _admin: AuthUser = Depends(require_admin_role),
+    org: Organization = Depends(get_current_org),
+    db: Session = Depends(get_db),
+) -> Any:
+    """Admin-only combined CSV diagnostic: upsert accounts, snapshot telemetry, score immediately."""
+    if not file.filename or not str(file.filename).lower().endswith(".csv"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Upload a .csv file")
+    payload = await file.read()
+    from src.integrations.csv_book import ingest_combined_csv
+
+    result = ingest_combined_csv(db, org, payload)
+    code = 200 if result.get("status") == "skipped" else 202
+    return JSONResponse(status_code=code, content=result)

@@ -1,17 +1,59 @@
 "use client";
 
-import { useAuth } from "@clerk/nextjs";
+import { useEffect, useState } from "react";
 
-const ADMIN_ALIASES = new Set(["admin", "org:admin", "org_admin", "org admin"]);
+import { useAuthedFetch } from "@/hooks/use-authed-fetch";
+import type { TenantSummary } from "@/lib/types";
 
+/**
+ * Admin UI gates (Approve, Settings PATCH, Run Outbound) use GET /api/v1/tenant
+ * role / is_admin from FastAPI AuthUser — not Clerk orgRole in the browser.
+ */
 export function useOrgRole() {
-  const { orgRole, isLoaded, isSignedIn } = useAuth();
-  const normalized = (orgRole || "").trim().toLowerCase();
-  const isAdmin = ADMIN_ALIASES.has(normalized);
+  const { request, isLoaded, isSignedIn } = useAuthedFetch();
+  const [role, setRole] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    if (!isLoaded) {
+      return;
+    }
+    if (!isSignedIn) {
+      setRole(null);
+      setIsAdmin(false);
+      setReady(true);
+      return;
+    }
+    let cancelled = false;
+    setReady(false);
+    void (async () => {
+      try {
+        const tenant = await request<TenantSummary>("/api/v1/tenant");
+        if (!cancelled) {
+          setRole(tenant.role ?? "Member");
+          setIsAdmin(Boolean(tenant.is_admin));
+        }
+      } catch {
+        if (!cancelled) {
+          setRole("Member");
+          setIsAdmin(false);
+        }
+      } finally {
+        if (!cancelled) {
+          setReady(true);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoaded, isSignedIn, request]);
+
   return {
-    isLoaded,
+    isLoaded: isLoaded && ready,
     isSignedIn,
-    orgRole: orgRole ?? null,
+    orgRole: role,
     isAdmin,
     isMember: Boolean(isSignedIn && !isAdmin),
   };
