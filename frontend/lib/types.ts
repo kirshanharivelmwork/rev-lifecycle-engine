@@ -16,6 +16,8 @@ export type TenantSummary = {
   org_id: string;
   plan_tier: string;
   pro?: boolean;
+  reverse_trial?: boolean;
+  reverse_trial_days_remaining?: number;
   model_version: string;
   hitl_mrr_threshold: number;
   alert_cooldown_days: number;
@@ -73,6 +75,8 @@ export type StagingPayload = {
 export type SettingsPayload = {
   plan_tier?: string;
   pro?: boolean;
+  reverse_trial?: boolean;
+  reverse_trial_days_remaining?: number;
   tenant: TenantSummary;
   integrations: {
     stripe: boolean;
@@ -104,6 +108,8 @@ export type BillingPayload = {
   name?: string;
   plan_tier: string;
   pro?: boolean;
+  reverse_trial?: boolean;
+  reverse_trial_days_remaining?: number;
   subscription_status: string;
   stripe_customer_id: string | null;
   portal_available: boolean;

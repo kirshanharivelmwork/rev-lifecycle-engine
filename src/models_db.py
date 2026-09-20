@@ -46,6 +46,7 @@ class Organization(Base):
     salesforce_instance_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     apollo_api_key: Mapped[Optional[str]] = mapped_column(EncryptedText, nullable=True)
     instantly_api_key: Mapped[Optional[str]] = mapped_column(EncryptedText, nullable=True)
+    clerk_user_created_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     # Audit aliases for the same ciphertext columns (plaintext in memory).
     hubspot_token = synonym("hubspot_access_token")
     salesforce_key = synonym("salesforce_access_token")

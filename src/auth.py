@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from src.billing import raise_if_inactive
 from src.database import get_db
-from src.entitlements import FREE_PLAN
+from src.entitlements import FREE_PLAN, apply_reverse_trial_from_claims, is_reverse_trial
 from src.models_db import Organization
 
 ADMIN_ROLE = "Admin"
@@ -268,7 +268,9 @@ def ensure_organization_for_user(db: Session, user: AuthUser) -> Organization:
 
 
 def load_organization_for_user(db: Session, user: AuthUser) -> Organization:
-    return ensure_organization_for_user(db, user)
+    org = ensure_organization_for_user(db, user)
+    apply_reverse_trial_from_claims(org, user.claims)
+    return org
 
 
 def get_current_org(
@@ -276,7 +278,8 @@ def get_current_org(
     db: Session = Depends(get_db),
 ) -> Organization:
     org = load_organization_for_user(db, user)
-    raise_if_inactive(org)
+    if not is_reverse_trial(org):
+        raise_if_inactive(org)
     return org
 
 

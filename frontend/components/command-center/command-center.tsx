@@ -10,6 +10,7 @@ import { AtRiskBook } from "@/components/command-center/at-risk-book";
 import { BookRiskChart } from "@/components/command-center/book-risk-chart";
 import { KpiGrid } from "@/components/command-center/kpi-grid";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ReverseTrialToast } from "@/components/ui/reverse-trial-toast";
 import { useProWaitlist } from "@/components/ui/pro-waitlist-modal";
 import { useAuthedFetch } from "@/hooks/use-authed-fetch";
 import { useCommandCenter } from "@/hooks/use-command-center";
@@ -197,6 +198,7 @@ export function CommandCenter() {
           <AtRiskBook rows={data.at_risk_book} />
         </>
       )}
+      <ReverseTrialToast orgId={tenant.org_id} active={Boolean(tenant.reverse_trial)} />
     </div>
   );
 }

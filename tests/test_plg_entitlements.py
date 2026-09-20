@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -145,3 +146,47 @@ def test_incomplete_free_org_can_load_command_center(plg_client: TestClient) -> 
     assert billing.status_code == 200
     assert billing.json()["plan_tier"] == "free"
     assert billing.json()["pro"] is False
+    assert billing.json()["reverse_trial"] is False
+
+
+def _trial_headers(org_id: str = FREE_ORG_ID, *, days_ago: int = 0) -> dict[str, str]:
+    created = int(time.time()) - days_ago * 86400
+    return clerk_auth_headers(org_id=org_id, role="Admin", extra_claims={"created_at": created})
+
+
+def test_reverse_trial_grants_pro_entitlements(plg_client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr("src.api.run_historical_backfill.delay", lambda *_a, **_k: None)
+    monkeypatch.setattr("src.routers.dashboard.trigger_outbound_engine.delay", lambda *_a, **_k: None)
+    headers = _trial_headers(days_ago=0)
+    billing = plg_client.get("/api/v1/billing", headers=headers)
+    assert billing.status_code == 200, billing.text
+    assert billing.json()["reverse_trial"] is True
+    assert billing.json()["pro"] is True
+    assert billing.json()["plan_tier"] == "free"
+    backfill = plg_client.post("/api/v1/backfill", json={"stripe_api_key": "sk_test"}, headers=headers)
+    outbound = plg_client.post("/api/v1/acquisition/run", json={}, headers=headers)
+    assert backfill.status_code == 200, backfill.text
+    assert outbound.status_code == 200, outbound.text
+    first = plg_client.post(
+        "/api/v1/ingestion/csv",
+        headers=headers,
+        files={"file": ("book.csv", io.BytesIO(COMBINED_CSV.encode("utf-8")), "text/csv")},
+    )
+    second = plg_client.post(
+        "/api/v1/ingestion/csv",
+        headers=headers,
+        files={"file": ("book2.csv", io.BytesIO(SECOND_CSV.encode("utf-8")), "text/csv")},
+    )
+    assert first.status_code == 202, first.text
+    assert second.status_code == 202, second.text
+
+
+def test_expired_reverse_trial_falls_back_to_free_tier(plg_client: TestClient) -> None:
+    headers = _trial_headers(days_ago=22)
+    billing = plg_client.get("/api/v1/billing", headers=headers)
+    backfill = plg_client.post("/api/v1/backfill", json={"stripe_api_key": "sk_test"}, headers=headers)
+    assert billing.status_code == 200, billing.text
+    assert billing.json()["reverse_trial"] is False
+    assert billing.json()["pro"] is False
+    assert backfill.status_code == 403, backfill.text
+    assert backfill.json() == {"error": "pro_required", "feature": "historical_backfill"}

@@ -118,6 +118,7 @@ def migrate_schema(engine: Engine) -> None:
     _ensure_column(engine, "organizations", "salesforce_instance_url", "salesforce_instance_url TEXT")
     _ensure_column(engine, "organizations", "apollo_api_key", "apollo_api_key TEXT")
     _ensure_column(engine, "organizations", "instantly_api_key", "instantly_api_key TEXT")
+    _ensure_column(engine, "organizations", "clerk_user_created_at", "clerk_user_created_at TIMESTAMP")
     _ensure_column(engine, "customer_accounts", "last_contacted_at", "last_contacted_at TIMESTAMP")
     _ensure_column(engine, "customer_accounts", "cooldown_days", "cooldown_days INTEGER DEFAULT 14")
     _ensure_column(engine, "customer_accounts", "suppressed_until", "suppressed_until TIMESTAMP")

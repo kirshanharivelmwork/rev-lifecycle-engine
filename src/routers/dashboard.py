@@ -14,7 +14,7 @@ from src.auth import AuthUser, get_current_org, get_current_user, require_admin_
 from src.database import get_db
 from src.dispatcher import approve_pending_dispatch, dismiss_false_positive
 from src.conversion_model import is_high_intent
-from src.entitlements import is_pro_org, plan_flags, require_pro
+from src.entitlements import plan_flags, require_pro
 from src.models_db import (
     ChurnAssessment,
     CustomerAccount,
@@ -126,8 +126,7 @@ def _tenant_payload(org: Organization) -> dict[str, Any]:
     return {
         "name": org.name,
         "org_id": org.org_id,
-        "plan_tier": org.plan_tier,
-        "pro": is_pro_org(org),
+        **plan_flags(org),
         "model_version": MODEL_VERSION,
         "hitl_mrr_threshold": float(org.hitl_mrr_threshold or HITL_MRR_THRESHOLD),
         "alert_cooldown_days": int(org.alert_cooldown_days or 14),
