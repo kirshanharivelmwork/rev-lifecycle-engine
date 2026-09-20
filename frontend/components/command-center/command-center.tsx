@@ -10,6 +10,7 @@ import { AtRiskBook } from "@/components/command-center/at-risk-book";
 import { BookRiskChart } from "@/components/command-center/book-risk-chart";
 import { KpiGrid } from "@/components/command-center/kpi-grid";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { useProWaitlist } from "@/components/ui/pro-waitlist-modal";
 import { useAuthedFetch } from "@/hooks/use-authed-fetch";
 import { useCommandCenter } from "@/hooks/use-command-center";
 import { formatUsd } from "@/lib/command-center-data";
@@ -30,6 +31,7 @@ export function CommandCenter() {
   const { data, error, loading, billingBlocked, reload } = useCommandCenter({
     enabled: checkoutActive,
   });
+  const { openWaitlist, csvSnapshotActive } = useProWaitlist();
 
   useEffect(() => {
     if (!sessionId) {
@@ -128,6 +130,7 @@ export function CommandCenter() {
 
   const tenant = data.tenant;
   const emptyBook = (tenant.subscriber_count ?? 0) === 0;
+  const showCsvBanner = !tenant.pro && csvSnapshotActive && !emptyBook;
 
   return (
     <div className="mx-auto flex max-w-[1400px] flex-col gap-6">
@@ -145,6 +148,23 @@ export function CommandCenter() {
         </p>
         {activationNote ? <p className="mt-2 text-sm text-primary">{activationNote}</p> : null}
       </header>
+
+      {showCsvBanner ? (
+        <Card className="rounded-2xl border-primary/30 bg-primary/5 shadow-card">
+          <CardContent className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-foreground">
+              Viewing snapshot analysis from your CSV. To enable real-time 24/7 churn prevention, join the Pro waitlist.
+            </p>
+            <button
+              type="button"
+              className="text-sm font-medium text-primary underline-offset-4 hover:underline"
+              onClick={() => openWaitlist()}
+            >
+              Join the Pro waitlist
+            </button>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {emptyBook ? (
         <Card className="rounded-2xl border-border shadow-card">

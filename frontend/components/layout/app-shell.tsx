@@ -3,6 +3,7 @@
 import { usePathname } from "next/navigation";
 
 import { AppSidebar } from "@/components/layout/app-sidebar";
+import { ProWaitlistProvider } from "@/components/ui/pro-waitlist-modal";
 
 const PUBLIC_PREFIXES = ["/pricing", "/sign-in", "/sign-up", "/privacy", "/terms", "/dpa"];
 
@@ -13,9 +14,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return <>{children}</>;
   }
   return (
-    <div className="flex min-h-screen bg-background">
-      <AppSidebar />
-      <main className="min-w-0 flex-1 px-8 py-6">{children}</main>
-    </div>
+    <ProWaitlistProvider>
+      <div className="flex min-h-screen bg-background">
+        <AppSidebar />
+        <main className="min-w-0 flex-1 px-8 py-6">{children}</main>
+      </div>
+    </ProWaitlistProvider>
   );
 }

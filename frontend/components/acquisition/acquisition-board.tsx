@@ -3,6 +3,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { ProBadge, ProLockOverlay, useProWaitlist } from "@/components/ui/pro-waitlist-modal";
 import {
   Table,
   TableBody,
@@ -22,6 +23,7 @@ function labelStatus(value: string) {
 export function AcquisitionBoard() {
   const { data, error, loading, running, runOutbound } = useAcquisition();
   const { isAdmin } = useOrgRole();
+  const { openWaitlist } = useProWaitlist();
 
   if (loading) {
     return <p className="text-sm text-muted-foreground">Loading live prospects…</p>;
@@ -34,6 +36,8 @@ export function AcquisitionBoard() {
   }
 
   const sequenceEntries = Object.entries(data.sequence_status);
+  const isPro = Boolean(data.tenant.pro);
+  const lockPro = !isPro;
   const sequenceSummary = sequenceEntries.length
     ? sequenceEntries.map(([status, count]) => `${labelStatus(status)} ${count}`).join(" · ")
     : "No sequences yet";
@@ -48,10 +52,14 @@ export function AcquisitionBoard() {
             {data.tenant.name} · Apollo ICP ingest, conversion scoring, and Instantly sequences
           </p>
         </div>
-        <div className="flex flex-col items-start gap-2">
-          <Button disabled={running || !isAdmin} onClick={() => void runOutbound()}>
-            {running ? "Running outbound…" : "Run outbound"}
-          </Button>
+        <div className="relative flex flex-col items-start gap-2">
+          <div className="flex items-center gap-2">
+            <Button disabled={running || !isAdmin || lockPro} onClick={() => void runOutbound()}>
+              {running ? "Running outbound…" : "Run outbound"}
+            </Button>
+            {lockPro ? <ProBadge /> : null}
+          </div>
+          <ProLockOverlay locked={lockPro} onUnlock={() => openWaitlist()} />
           {!isAdmin ? <p className="text-sm text-muted-foreground">Admin access required</p> : null}
         </div>
       </header>

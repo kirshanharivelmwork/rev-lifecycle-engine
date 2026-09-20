@@ -27,6 +27,7 @@ from src.models_db import (
     ProspectLead,
     SystemAuditLog,
     TelemetryEvent,
+    WaitlistSignup,
     utcnow,
 )
 from src.paths import INTERVENTION_SUCCESS_RATE
@@ -67,6 +68,7 @@ CHANNELS = ("Outbound Cold Email", "Inbound Organic", "Paid Search", "Partner Re
 
 
 def _wipe_org(session, org_id: str) -> None:
+    session.query(WaitlistSignup).filter(WaitlistSignup.org_id == org_id).delete()
     session.query(InterventionOutcome).filter(InterventionOutcome.org_id == org_id).delete()
     session.query(IngestionJob).filter(IngestionJob.org_id == org_id).delete()
     session.query(DeadLetterJob).filter(DeadLetterJob.org_id == org_id).delete()

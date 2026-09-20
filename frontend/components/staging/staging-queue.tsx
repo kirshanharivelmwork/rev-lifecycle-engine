@@ -2,6 +2,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ProBadge, ProLockOverlay, useProWaitlist } from "@/components/ui/pro-waitlist-modal";
 import { useOrgRole } from "@/hooks/use-org-role";
 import { useStagingQueue } from "@/hooks/use-staging";
 import { formatUsd } from "@/lib/command-center-data";
@@ -11,6 +12,7 @@ const ADMIN_REASON = "Admin access required";
 export function StagingQueue() {
   const { data, error, loading, approve, dismiss, pendingId } = useStagingQueue();
   const { isAdmin } = useOrgRole();
+  const { openWaitlist } = useProWaitlist();
 
   if (loading) {
     return <p className="text-sm text-muted-foreground">Loading approval queue…</p>;
@@ -21,6 +23,8 @@ export function StagingQueue() {
   if (!data) {
     return <p className="text-sm text-muted-foreground">Sign in to review pending playbooks.</p>;
   }
+
+  const lockPro = !Boolean(data.tenant.pro);
 
   return (
     <div className="mx-auto flex max-w-[1400px] flex-col gap-6">
@@ -65,22 +69,26 @@ export function StagingQueue() {
                     {formatUsd(account.mrr)} MRR · {account.risk_tier} · {account.recommended_action || "retention playbook"}
                   </p>
                 </div>
-                <div className="flex flex-col items-start gap-2 sm:items-end">
-                  <div className="flex gap-2">
+                <div className="relative flex flex-col items-start gap-2 sm:items-end">
+                  <div className="flex items-center gap-2">
+                    <div className="flex gap-2">
                     <Button
-                      disabled={!isAdmin || pendingId === account.account_id}
+                      disabled={!isAdmin || lockPro || pendingId === account.account_id}
                       onClick={() => void approve(account.account_id)}
                     >
                       Approve Dispatch
                     </Button>
                     <Button
                       variant="outline"
-                      disabled={!isAdmin || pendingId === account.account_id}
+                      disabled={!isAdmin || lockPro || pendingId === account.account_id}
                       onClick={() => void dismiss(account.account_id)}
                     >
                       Dismiss / False Positive
                     </Button>
+                    </div>
+                    {lockPro ? <ProBadge /> : null}
                   </div>
+                  <ProLockOverlay locked={lockPro} onUnlock={() => openWaitlist()} />
                   {!isAdmin ? <p className="text-sm text-muted-foreground">{ADMIN_REASON}</p> : null}
                 </div>
               </CardContent>

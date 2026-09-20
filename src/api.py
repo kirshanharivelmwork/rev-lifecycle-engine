@@ -26,6 +26,7 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from src.auth import AuthUser, get_current_org, get_current_user, require_admin_role
 from src.billing import INGEST_LIMIT, SubscriptionInactive, billing_json_response, limiter
+from src.entitlements import ProRequired, pro_required_response, require_pro
 from src.quotas import PlanLimitExceeded, ensure_ingest_run_quota, plan_limit_response, record_ingest_run
 from src.churn_model import ChurnScoringEngine, load_or_train
 from src.database import get_db, init_db
@@ -41,7 +42,7 @@ from src.paths import (
     PROCESSED_DIR,
 )
 from src.retraining_pipeline import load_tenant_engine
-from src.routers import billing, customers, dashboard, ingestion, jobs, webhooks
+from src.routers import billing, customers, dashboard, ingestion, jobs, waitlist, webhooks
 from src.scoring import assign_risk_tier, recommend_playbook, risk_drivers
 from src.tasks import run_historical_backfill
 from src.observability import RequestIdMiddleware, configure_logging, init_sentry
@@ -238,6 +239,11 @@ async def _subscription_inactive(_request: Request, _exc: SubscriptionInactive):
     return billing_json_response()
 
 
+@app.exception_handler(ProRequired)
+async def _pro_required(_request: Request, exc: ProRequired):
+    return pro_required_response(exc)
+
+
 @app.exception_handler(PlanLimitExceeded)
 async def _plan_limit(_request: Request, exc: PlanLimitExceeded):
     return plan_limit_response(exc)
@@ -257,6 +263,8 @@ app.include_router(dashboard.router, prefix="/api/v1")
 app.include_router(dashboard.router, prefix="/v1")
 app.include_router(jobs.router, prefix="/api/v1")
 app.include_router(jobs.router, prefix="/v1")
+app.include_router(waitlist.router, prefix="/api/v1")
+app.include_router(waitlist.router, prefix="/v1")
 
 
 @app.post("/api/v1/billing/create-checkout-session")
@@ -317,6 +325,7 @@ def trigger_historical_backfill(
     org: Organization = Depends(get_current_org),
     db: Session = Depends(get_db),
 ) -> HistoricalBackfillResponse:
+    require_pro(org, "historical_backfill")
     stripe_key = (
         (payload.stripe_api_key or "").strip()
         or os.getenv("STRIPE_SECRET_KEY")
@@ -495,6 +504,7 @@ def predict(
     org: Organization = Depends(get_current_org),
     engine: ChurnScoringEngine = Depends(get_predict_engine),
 ) -> PredictionResponse:
+    require_pro(org, "predict")
     try:
         return score_payload(payload, engine, org=org)
     except Exception as exc:  # pragma: no cover - defensive
@@ -511,6 +521,7 @@ def dispatch_alert(
     org: Organization = Depends(get_current_org),
     engine: ChurnScoringEngine = Depends(get_predict_engine),
 ) -> DispatchResponse:
+    require_pro(org, "dispatcher")
     prediction = score_payload(payload, engine, org=org)
     webhook_url = payload.webhook_url or os.getenv("WEBHOOK_URL")
     body = _webhook_body(prediction, payload)

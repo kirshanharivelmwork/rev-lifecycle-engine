@@ -8,12 +8,14 @@ export type PlanQuotas = {
   customer_accounts: QuotaMeter;
   prospect_leads: QuotaMeter;
   ingest_runs_per_utc_day: QuotaMeter;
+  csv_ingests_per_calendar_month?: QuotaMeter;
 };
 
 export type TenantSummary = {
   name: string;
   org_id: string;
   plan_tier: string;
+  pro?: boolean;
   model_version: string;
   hitl_mrr_threshold: number;
   alert_cooldown_days: number;
@@ -69,6 +71,8 @@ export type StagingPayload = {
 };
 
 export type SettingsPayload = {
+  plan_tier?: string;
+  pro?: boolean;
   tenant: TenantSummary;
   integrations: {
     stripe: boolean;
@@ -99,6 +103,7 @@ export type BillingPayload = {
   org_id: string;
   name?: string;
   plan_tier: string;
+  pro?: boolean;
   subscription_status: string;
   stripe_customer_id: string | null;
   portal_available: boolean;

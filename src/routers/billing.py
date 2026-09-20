@@ -8,8 +8,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from src.auth import AuthUser, generate_api_key, get_current_org_unpaid, hash_api_key
+from src.auth import AuthUser, get_current_org_unpaid, ensure_organization_for_user
 from src.database import get_db
+from src.entitlements import plan_flags
 from src.models_db import Organization
 from src.quotas import quota_snapshot
 
@@ -21,7 +22,7 @@ def _billing_payload(org: Organization) -> dict[str, Any]:
     return {
         "org_id": org.org_id,
         "name": org.name,
-        "plan_tier": org.plan_tier,
+        **plan_flags(org),
         "subscription_status": org.subscription_status,
         "stripe_customer_id": org.stripe_customer_id,
         "portal_available": bool(org.stripe_customer_id),
@@ -39,36 +40,6 @@ def get_billing_status(
 
 def _frontend_url() -> str:
     return (os.getenv("FRONTEND_URL") or os.getenv("APP_URL") or "http://localhost:3000").rstrip("/")
-
-
-def _org_display_name(user: AuthUser) -> str:
-    claims = user.claims or {}
-    org_claim = claims.get("o") if isinstance(claims.get("o"), dict) else {}
-    for key in ("org_name", "orgName"):
-        value = claims.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()[:160]
-    nested = org_claim.get("nam") or org_claim.get("name") if isinstance(org_claim, dict) else None
-    if isinstance(nested, str) and nested.strip():
-        return nested.strip()[:160]
-    return "New workspace"
-
-
-def ensure_organization_for_user(db: Session, user: AuthUser) -> Organization:
-    """Load the Clerk org row, creating a tenant on first checkout."""
-    org = db.query(Organization).filter(Organization.org_id == user.org_id).one_or_none()
-    if org is not None:
-        return org
-    org = Organization(
-        org_id=user.org_id,
-        name=_org_display_name(user),
-        api_key=hash_api_key(generate_api_key()),
-        plan_tier="growth",
-        subscription_status="incomplete",
-    )
-    db.add(org)
-    db.flush()
-    return org
 
 
 def create_stripe_checkout_session(user: AuthUser, db: Session) -> dict[str, Any]:
@@ -156,6 +127,10 @@ def confirm_stripe_checkout_session(user: AuthUser, db: Session, session_id: str
             if isinstance(customer, dict):
                 customer = customer.get("id")
             org.subscription_status = "active"
+            if org.plan_tier == "free":
+                from src.entitlements import PAID_DEFAULT_PLAN
+
+                org.plan_tier = PAID_DEFAULT_PLAN
             if customer:
                 org.stripe_customer_id = str(customer)
             db.flush()

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from src.auth import AuthUser, hash_api_key, require_admin_role, get_current_org
 from src.billing import INGEST_LIMIT, limiter, raise_if_inactive
 from src.database import get_db
+from src.entitlements import require_pro
 from src.models_db import IdempotentEvent, IngestionJob, Organization, utcnow
 from src.tasks import process_ingestion_job
 
@@ -194,6 +195,7 @@ def telemetry_webhook(
         x_api_key,
         write_key=payload.write_key,
     )
+    require_pro(org, "telemetry_webhooks")
     body = payload.model_dump(by_alias=True)
     items = payload.batch or []
     if payload.event and (payload.user_id or (payload.properties or {}).get("user_id")):
@@ -262,5 +264,6 @@ async def upload_csv_book(
     from src.integrations.csv_book import ingest_combined_csv
 
     result = ingest_combined_csv(db, org, payload)
+    db.commit()
     code = 200 if result.get("status") == "skipped" else 202
     return JSONResponse(status_code=code, content=result)

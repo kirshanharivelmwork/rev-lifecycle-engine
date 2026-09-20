@@ -12,8 +12,9 @@ from sqlalchemy.orm import Session
 
 from src.billing import INGEST_LIMIT, limiter
 from src.database import get_db
+from src.entitlements import is_pro_org, require_pro
 from src.models_db import OutboundCampaign, ProspectLead, utcnow
-from src.routers.account_ops import apply_org_billing_from_stripe
+from src.routers.account_ops import apply_org_billing_from_stripe, _is_platform_billing_event
 from src.routers.ingestion import (
     _enqueue_job,
     _resolve_org,
@@ -125,6 +126,7 @@ def instantly_webhook(
         write_key=custom.get("write_key") or payload.get("api_key"),
         enforce_billing=False,
     )
+    require_pro(org, "instantly_webhooks")
     if not _is_positive_instantly_event(payload):
         return {
             "ok": True,
@@ -201,11 +203,30 @@ async def stripe_webhook(
     event = verify_stripe_signature(raw, stripe_signature, secret)
     # Activate billing in-request so Checkout → dashboard never waits on Celery.
     apply_org_billing_from_stripe(db, event, org)
+    event_type = event.get("type") or event.get("event")
+    obj = (event.get("data") or {}).get("object") or event.get("object") or {}
+    customer_id = _stripe_customer_hint(event)
+    billing_only = _is_platform_billing_event(org, event_type, obj, customer_id)
+    if not billing_only:
+        require_pro(org, "stripe_webhooks")
     event_id = extract_event_id(event, "stripe")
     if not claim_idempotent_event(db, org.org_id, event_id, "stripe"):
         return JSONResponse(
             status_code=200,
             content={"status": "skipped", "reason": "duplicate", "event_id": event_id, "org_id": org.org_id},
+        )
+    if billing_only and not is_pro_org(org):
+        db.commit()
+        return JSONResponse(
+            status_code=202,
+            content={
+                "ok": True,
+                "accepted": True,
+                "status": "activated",
+                "org_id": org.org_id,
+                "event_type": event.get("type"),
+                "event_id": event_id,
+            },
         )
     job = _enqueue_job(db, org, "stripe", event)
     return JSONResponse(

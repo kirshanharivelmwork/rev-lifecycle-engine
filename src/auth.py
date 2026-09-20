@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from src.billing import raise_if_inactive
 from src.database import get_db
+from src.entitlements import FREE_PLAN
 from src.models_db import Organization
 
 ADMIN_ROLE = "Admin"
@@ -236,14 +237,38 @@ def require_admin_role(user: AuthUser = Depends(get_current_user)) -> AuthUser:
     return user
 
 
-def load_organization_for_user(db: Session, user: AuthUser) -> Organization:
+def _org_display_name(user: AuthUser) -> str:
+    claims = user.claims or {}
+    org_claim = claims.get("o") if isinstance(claims.get("o"), dict) else {}
+    for key in ("org_name", "orgName"):
+        value = claims.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:160]
+    nested = org_claim.get("nam") or org_claim.get("name") if isinstance(org_claim, dict) else None
+    if isinstance(nested, str) and nested.strip():
+        return nested.strip()[:160]
+    return "New workspace"
+
+
+def ensure_organization_for_user(db: Session, user: AuthUser) -> Organization:
+    """Load the Clerk org row, creating a free-tier tenant on first authenticated request."""
     org = db.query(Organization).filter(Organization.org_id == user.org_id).one_or_none()
-    if org is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unknown organization for Clerk JWT",
-        )
+    if org is not None:
+        return org
+    org = Organization(
+        org_id=user.org_id,
+        name=_org_display_name(user),
+        api_key=hash_api_key(generate_api_key()),
+        plan_tier=FREE_PLAN,
+        subscription_status="incomplete",
+    )
+    db.add(org)
+    db.flush()
     return org
+
+
+def load_organization_for_user(db: Session, user: AuthUser) -> Organization:
+    return ensure_organization_for_user(db, user)
 
 
 def get_current_org(

@@ -6,25 +6,39 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from src.entitlements import FREE_PLAN, is_free_plan
 from src.models_db import CustomerAccount, IngestionJob, Organization, ProspectLead, utcnow
 
 DEFAULT_PLAN = "growth"
 INGEST_RUN_SOURCES = frozenset({"csv", "historical_backfill"})
+CSV_SOURCE = "csv"
+
+GROWTH_QUOTAS = {
+    "customer_accounts": 250,
+    "prospect_leads": 100,
+    "ingest_runs_per_utc_day": 15,
+    "csv_ingests_per_calendar_month": 15,
+}
 
 # Growth defaults. Seeded demo orgs (50 accounts, 4 prospects) stay under these caps.
 PLAN_QUOTAS: dict[str, dict[str, int]] = {
-    "growth": {
-        "customer_accounts": 250,
-        "prospect_leads": 100,
-        "ingest_runs_per_utc_day": 15,
+    FREE_PLAN: {
+        "customer_accounts": 50,
+        "prospect_leads": 0,
+        "ingest_runs_per_utc_day": 1,
+        "csv_ingests_per_calendar_month": 1,
     },
+    "growth": dict(GROWTH_QUOTAS),
+    "pro": dict(GROWTH_QUOTAS),
 }
 
 LIMIT_CUSTOMER_ACCOUNTS = "customer_accounts"
 LIMIT_PROSPECT_LEADS = "prospect_leads"
 LIMIT_INGEST_RUNS = "ingest_runs_per_utc_day"
+LIMIT_CSV_MONTHLY = "csv_ingests_per_calendar_month"
 
 
 class PlanLimitExceeded(Exception):
@@ -46,6 +60,8 @@ def plan_limit_response(exc: PlanLimitExceeded) -> JSONResponse:
 
 def limits_for_plan(plan_tier: str | None) -> dict[str, int]:
     key = (plan_tier or DEFAULT_PLAN).strip().lower() or DEFAULT_PLAN
+    if is_free_plan(key):
+        return dict(PLAN_QUOTAS[FREE_PLAN])
     return dict(PLAN_QUOTAS.get(key) or PLAN_QUOTAS[DEFAULT_PLAN])
 
 
@@ -77,16 +93,38 @@ def count_ingest_runs_today(session: Session, org_id: str, *, now: datetime | No
     )
 
 
+def utc_month_start(now: datetime | None = None) -> datetime:
+    current = utc_day_start(now)
+    return current.replace(day=1)
+
+
+def count_csv_ingests_this_month(session: Session, org_id: str, *, now: datetime | None = None) -> int:
+    start = utc_month_start(now)
+    result = session.execute(
+        text(
+            "SELECT COUNT(*) FROM ingestion_jobs "
+            "WHERE org_id = :org_id AND source = :source AND created_at >= :start"
+        ),
+        {"org_id": org_id, "source": CSV_SOURCE, "start": start},
+    )
+    return int(result.scalar() or 0)
+
+
 def quota_snapshot(session: Session, org: Organization) -> dict[str, Any]:
     limits = limits_for_plan(org.plan_tier)
     accounts = count_customer_accounts(session, org.org_id)
     prospects = count_prospect_leads(session, org.org_id)
     ingest = count_ingest_runs_today(session, org.org_id)
-    return {
+    csv_month = count_csv_ingests_this_month(session, org.org_id)
+    snapshot = {
         "customer_accounts": _meter(accounts, limits[LIMIT_CUSTOMER_ACCOUNTS]),
         "prospect_leads": _meter(prospects, limits[LIMIT_PROSPECT_LEADS]),
         "ingest_runs_per_utc_day": _meter(ingest, limits[LIMIT_INGEST_RUNS]),
+        "csv_ingests_per_calendar_month": _meter(csv_month, limits[LIMIT_CSV_MONTHLY]),
     }
+    if is_free_plan(org.plan_tier):
+        snapshot["ingest_runs_per_utc_day"] = snapshot["csv_ingests_per_calendar_month"]
+    return snapshot
 
 
 def _meter(used: int, maximum: int) -> dict[str, int]:
@@ -113,6 +151,12 @@ def ensure_prospect_lead_quota(session: Session, org: Organization, additional: 
 
 def ensure_ingest_run_quota(session: Session, org: Organization, additional: int = 1) -> None:
     if additional <= 0:
+        return
+    if is_free_plan(org.plan_tier):
+        used = count_csv_ingests_this_month(session, org.org_id)
+        maximum = limits_for_plan(org.plan_tier)[LIMIT_CSV_MONTHLY]
+        if used + additional > maximum:
+            raise PlanLimitExceeded(LIMIT_CSV_MONTHLY, used, maximum)
         return
     used = count_ingest_runs_today(session, org.org_id)
     maximum = limits_for_plan(org.plan_tier)[LIMIT_INGEST_RUNS]

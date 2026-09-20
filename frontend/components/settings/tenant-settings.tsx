@@ -6,8 +6,10 @@ import Link from "next/link";
 import { QuotaMeters } from "@/components/billing/quota-meters";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ProBadge, ProLockOverlay, useProWaitlist } from "@/components/ui/pro-waitlist-modal";
 import { useOrgRole } from "@/hooks/use-org-role";
 import { useTenantSettings } from "@/hooks/use-tenant-settings";
+import { ApiError } from "@/lib/api";
 import { formatWhen } from "@/lib/command-center-data";
 
 const EMPTY_SECRETS = {
@@ -26,6 +28,7 @@ export function TenantSettings() {
   const { data, error, loading, saving, backfilling, scoringCsv, save, runBackfill, uploadCsvBook, deleteCustomer, reload } =
     useTenantSettings();
   const { isAdmin, isLoaded: roleLoaded } = useOrgRole();
+  const { openWaitlist, handlePlanLimit, markCsvSnapshot } = useProWaitlist();
   const [cooldown, setCooldown] = useState(14);
   const [hitl, setHitl] = useState(1000);
   const [salesforceInstance, setSalesforceInstance] = useState("");
@@ -63,7 +66,10 @@ export function TenantSettings() {
     .filter(([, enabled]) => enabled)
     .map(([key]) => key);
   const emptyBook = (data.tenant.subscriber_count ?? 0) === 0;
+  const isPro = Boolean(data.pro ?? data.tenant.pro);
+  const lockPro = !isPro;
   const inputsDisabled = !isAdmin || saving || scoring || scoringCsv || backfilling;
+  const secretDisabled = inputsDisabled || lockPro;
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -88,6 +94,10 @@ export function TenantSettings() {
 
   async function onBackfill() {
     if (!isAdmin) {
+      return;
+    }
+    if (lockPro) {
+      openWaitlist();
       return;
     }
     setBackfillMessage(null);
@@ -127,8 +137,15 @@ export function TenantSettings() {
       setCsvMessage(
         `Scored ${result.assessments_written ?? 0} accounts. Open the Command Center to review the 48-hour diagnostic.`,
       );
-    } catch {
-      setCsvMessage(null);
+      if (lockPro) {
+        markCsvSnapshot();
+      }
+    } catch (exc) {
+      if (handlePlanLimit(exc)) {
+        setCsvMessage("You've used this month's free diagnostic. Join the Pro waitlist.");
+        return;
+      }
+      setCsvMessage(exc instanceof ApiError ? exc.message : null);
     }
   }
 
@@ -161,7 +178,7 @@ export function TenantSettings() {
         {!isAdmin ? <p className="mt-2 text-sm text-muted-foreground">{ADMIN_REASON}</p> : null}
       </header>
 
-      <QuotaMeters quotas={data.quotas} />
+      <QuotaMeters quotas={data.quotas} freeTier={lockPro} />
 
       <Card className="rounded-2xl border-border shadow-card">
         <CardHeader>
@@ -235,7 +252,7 @@ export function TenantSettings() {
               historical backfill.
             </CardDescription>
           </CardHeader>
-          <CardContent className="flex flex-col gap-3">
+          <CardContent className="relative flex flex-col gap-3">
             <label className="text-sm font-medium">
               Stripe API key
               <input
@@ -271,13 +288,17 @@ export function TenantSettings() {
               />
             </label>
             <div>
-              <Button
-                type="button"
-                disabled={inputsDisabled || !stripeApiKey.trim()}
-                onClick={() => void onBackfill()}
-              >
-                {scoring || backfilling ? "Scoring your book…" : "Run historical backfill"}
-              </Button>
+              <div className="relative inline-flex items-center gap-2">
+                <Button
+                  type="button"
+                  disabled={inputsDisabled || lockPro || !stripeApiKey.trim()}
+                  onClick={() => void onBackfill()}
+                >
+                  {scoring || backfilling ? "Scoring your book…" : "Run historical backfill"}
+                </Button>
+                {lockPro ? <ProBadge /> : null}
+                <ProLockOverlay locked={lockPro} onUnlock={() => openWaitlist()} />
+              </div>
               {!isAdmin ? <p className="mt-2 text-sm text-muted-foreground">{ADMIN_REASON}</p> : null}
               {backfillMessage ? <p className="mt-2 text-sm text-primary">{backfillMessage}</p> : null}
             </div>
@@ -291,7 +312,7 @@ export function TenantSettings() {
               Re-run Stripe history if you need to refresh the scored book ({data.tenant.subscriber_count} accounts).
             </CardDescription>
           </CardHeader>
-          <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <CardContent className="relative flex flex-col gap-3 sm:flex-row sm:items-end">
             <label className="flex-1 text-sm font-medium">
               Stripe API key
               <input
@@ -328,11 +349,13 @@ export function TenantSettings() {
             </label>
             <Button
               type="button"
-              disabled={inputsDisabled || !stripeApiKey.trim()}
+              disabled={inputsDisabled || lockPro || !stripeApiKey.trim()}
               onClick={() => void onBackfill()}
             >
               {scoring || backfilling ? "Scoring your book…" : "Run historical backfill"}
             </Button>
+            {lockPro ? <ProBadge /> : null}
+            <ProLockOverlay locked={lockPro} onUnlock={() => openWaitlist()} />
           </CardContent>
           {!isAdmin ? <p className="px-6 pb-4 text-sm text-muted-foreground">{ADMIN_REASON}</p> : null}
           {backfillMessage ? <p className="px-6 pb-4 text-sm text-primary">{backfillMessage}</p> : null}
@@ -360,16 +383,20 @@ export function TenantSettings() {
             ["instantly_api_key", "Instantly API key"],
           ] as const
         ).map(([key, label]) => (
-          <label key={key} className="text-sm font-medium">
-            {label}
+          <label key={key} className="relative text-sm font-medium">
+            <span className="inline-flex items-center gap-2">
+              {label}
+              {lockPro ? <ProBadge /> : null}
+            </span>
             <input
               className={inputClass}
               type="password"
               autoComplete="off"
-              disabled={inputsDisabled}
+              disabled={secretDisabled}
               value={secrets[key]}
               onChange={(event) => setSecrets((current) => ({ ...current, [key]: event.target.value }))}
             />
+            <ProLockOverlay locked={lockPro} onUnlock={() => openWaitlist()} />
           </label>
         ))}
         <label className="text-sm font-medium md:col-span-2">

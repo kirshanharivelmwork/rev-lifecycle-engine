@@ -137,3 +137,6 @@ def test_billing_and_settings_include_remaining_quota(quota_client: TestClient) 
         assert payload["prospect_leads"]["used"] == 4
         assert payload["prospect_leads"]["remaining"] == 96
         assert payload["ingest_runs_per_utc_day"]["remaining"] == 15
+    assert billing.json()["pro"] is True
+    assert settings.json()["pro"] is True
+    assert billing.json()["plan_tier"]

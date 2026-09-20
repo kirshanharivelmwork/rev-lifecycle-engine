@@ -80,6 +80,10 @@ def apply_org_billing_from_stripe(
         target.stripe_customer_id = customer_id
     if event_type == "checkout.session.completed":
         target.subscription_status = "active"
+        if (target.plan_tier or "").strip().lower() == "free":
+            from src.entitlements import PAID_DEFAULT_PLAN
+
+            target.plan_tier = PAID_DEFAULT_PLAN
     elif event_type in {"customer.subscription.updated", "customer.subscription.created"}:
         mapped = _SUBSCRIPTION_STATUS_MAP.get(str(obj.get("status") or "").lower())
         if mapped:

@@ -14,6 +14,7 @@ from src.auth import AuthUser, get_current_org, get_current_user, require_admin_
 from src.database import get_db
 from src.dispatcher import approve_pending_dispatch, dismiss_false_positive
 from src.conversion_model import is_high_intent
+from src.entitlements import is_pro_org, plan_flags, require_pro
 from src.models_db import (
     ChurnAssessment,
     CustomerAccount,
@@ -126,6 +127,7 @@ def _tenant_payload(org: Organization) -> dict[str, Any]:
         "name": org.name,
         "org_id": org.org_id,
         "plan_tier": org.plan_tier,
+        "pro": is_pro_org(org),
         "model_version": MODEL_VERSION,
         "hitl_mrr_threshold": float(org.hitl_mrr_threshold or HITL_MRR_THRESHOLD),
         "alert_cooldown_days": int(org.alert_cooldown_days or 14),
@@ -211,6 +213,7 @@ def approve_staging_account(
     org: Organization = Depends(get_current_org),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    require_pro(org, "staging_approve")
     account = (
         db.query(CustomerAccount)
         .filter(CustomerAccount.id == account_id, CustomerAccount.org_id == org.org_id)
@@ -229,6 +232,7 @@ def dismiss_staging_account(
     org: Organization = Depends(get_current_org),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    require_pro(org, "staging_dismiss")
     account = (
         db.query(CustomerAccount)
         .filter(CustomerAccount.id == account_id, CustomerAccount.org_id == org.org_id)
@@ -254,6 +258,7 @@ def get_tenant_settings(
     )
     book = _latest_book(db, org.org_id)
     return {
+        **plan_flags(org),
         "tenant": {**_tenant_payload(org), "subscriber_count": len(book)},
         "integrations": _integration_flags(org),
         "webhook_urls": webhook_urls(),
@@ -280,6 +285,18 @@ def patch_tenant_settings(
     org: Organization = Depends(get_current_org),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
+    secret_fields = (
+        payload.stripe_webhook_secret,
+        payload.slack_webhook_url,
+        payload.resend_api_key,
+        payload.hubspot_access_token,
+        payload.salesforce_access_token,
+        payload.apollo_api_key,
+        payload.instantly_api_key,
+    )
+    if any(value is not None and str(value).strip() for value in secret_fields):
+        require_pro(org, "settings_integrations")
+
     def _clean(value: Optional[str]) -> Optional[str]:
         if value is None:
             return None
@@ -385,6 +402,7 @@ def run_acquisition_outbound(
     org: Organization = Depends(get_current_org),
     _admin: AuthUser = Depends(require_admin_role),
 ) -> dict[str, Any]:
+    require_pro(org, "acquisition_run")
     trigger_outbound_engine.delay(org.org_id, payload.search_params, payload.campaign_id)
     return {
         "accepted": True,

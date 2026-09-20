@@ -42,9 +42,15 @@ def process_ingestion_job(job_id: str, max_attempts: int = MAX_ATTEMPTS) -> dict
             org = session.get(Organization, job.org_id)
             if org is None:
                 raise RuntimeError("organization missing for ingestion job")
+            from src.entitlements import is_pro_org
             from src.rls import set_tenant_context
 
             set_tenant_context(session, org.org_id)
+            if not is_pro_org(org):
+                job = session.get(IngestionJob, job_id)
+                _mark(job, "skipped", "pro_required")
+                session.commit()
+                return {"ok": True, "job_id": job_id, "skipped": True, "reason": "pro_required"}
             payload = job.payload or {}
             source = job.source
             if source == "stripe":
@@ -155,6 +161,15 @@ def run_historical_backfill(
     posthog_project_id: Optional[str] = None,
 ) -> dict[str, Any]:
     from src.integrations.backfill import run_historical_backfill as _run
+    from src.entitlements import is_pro_org
+
+    session = get_session_factory()()
+    try:
+        org = session.get(Organization, org_id)
+        if not is_pro_org(org):
+            return {"ok": False, "skipped": True, "reason": "pro_required", "org_id": org_id}
+    finally:
+        session.close()
 
     return asyncio.run(
         _run(
@@ -178,6 +193,7 @@ async def run_daily_outbound_engine(
 ) -> dict[str, Any]:
     """Fetch Apollo ICP leads, score them, and push conversion_score > 80 to Instantly."""
     from src.conversion_model import apply_lead_score, is_high_intent
+    from src.entitlements import is_pro_org
     from src.integrations.acquisition import fetch_apollo_leads, push_to_instantly as _push
     from src.models_db import ProspectLead
     from src.rls import set_tenant_context
@@ -188,6 +204,9 @@ async def run_daily_outbound_engine(
     campaign = campaign_id or os.getenv("INSTANTLY_CAMPAIGN_ID") or "default"
     try:
         set_tenant_context(session, org_id)
+        org = session.get(Organization, org_id)
+        if not is_pro_org(org):
+            return {"ok": False, "skipped": True, "reason": "pro_required", "org_id": org_id}
         fetched = await fetch_apollo_leads(
             org_id,
             search_params or {},

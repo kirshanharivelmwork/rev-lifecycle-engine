@@ -312,6 +312,13 @@ def evaluate_and_trigger_actions(
 
         org = session.get(Organization, org_id)
         cooldown_days = _org_cooldown_days(org, account)
+        from src.entitlements import is_pro_org
+
+        if not is_pro_org(org):
+            result = {"status": "skipped", "reason": "pro_required", "account_id": account_id, "org_id": org_id}
+            if owns_session:
+                session.commit()
+            return result
         hitl_floor = _org_hitl_threshold(org)
         slack_url = (
             decrypt_secret(org.slack_webhook_url) if org else None

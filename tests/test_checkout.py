@@ -88,6 +88,7 @@ def test_create_checkout_session_provisions_unknown_org(checkout_db, monkeypatch
     session.close()
     assert created is not None
     assert created.subscription_status == "incomplete"
+    assert created.plan_tier == "free"
     assert response.json()["org_id"] == "org_new_tenant"
 
 

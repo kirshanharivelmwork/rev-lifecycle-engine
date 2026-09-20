@@ -2,11 +2,25 @@ export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 export class ApiError extends Error {
   status: number;
+  code?: string;
+  feature?: string;
+  limit?: string;
+  body?: Record<string, unknown>;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, body?: Record<string, unknown>) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.body = body;
+    if (typeof body?.error === "string") {
+      this.code = body.error;
+    }
+    if (typeof body?.feature === "string") {
+      this.feature = body.feature;
+    }
+    if (typeof body?.limit === "string") {
+      this.limit = body.limit;
+    }
   }
 }
 
@@ -32,6 +46,7 @@ export async function apiFetch<T>(path: string, token: string, init?: RequestIni
     let detail = response.statusText;
     try {
       const body = await response.json();
+      const parsed = body && typeof body === "object" ? (body as Record<string, unknown>) : undefined;
       if (typeof body?.detail === "string") {
         detail = body.detail;
       } else if (typeof body?.error === "string") {
@@ -39,7 +54,11 @@ export async function apiFetch<T>(path: string, token: string, init?: RequestIni
       } else if (body?.detail) {
         detail = JSON.stringify(body.detail);
       }
-    } catch {
+      throw new ApiError(detail || `Request failed (${response.status})`, response.status, parsed);
+    } catch (exc) {
+      if (exc instanceof ApiError) {
+        throw exc;
+      }
       detail = (await response.text()) || detail;
     }
     throw new ApiError(detail || `Request failed (${response.status})`, response.status);

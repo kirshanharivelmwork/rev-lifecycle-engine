@@ -32,7 +32,7 @@ class Organization(Base):
     org_id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     api_key: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
-    plan_tier: Mapped[str] = mapped_column(String(32), default="growth", nullable=False)
+    plan_tier: Mapped[str] = mapped_column(String(32), default="free", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     slack_webhook_url: Mapped[Optional[str]] = mapped_column(EncryptedText, nullable=True)
     stripe_webhook_secret: Mapped[Optional[str]] = mapped_column(EncryptedText, nullable=True)
@@ -273,3 +273,17 @@ class OutboundCampaign(Base):
     last_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     lead: Mapped["ProspectLead"] = relationship(back_populates="campaigns")
+
+
+class WaitlistSignup(Base):
+    __tablename__ = "waitlist_signups"
+    __table_args__ = (UniqueConstraint("org_id", name="uq_waitlist_org"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    org_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("organizations.org_id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    actor_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

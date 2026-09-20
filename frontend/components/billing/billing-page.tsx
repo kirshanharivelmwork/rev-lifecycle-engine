@@ -55,7 +55,7 @@ export function BillingPage() {
 
       {data.needs_payment ? <PaymentCta message={statusCopy(data.subscription_status)} /> : null}
 
-      <QuotaMeters quotas={data.quotas} />
+      <QuotaMeters quotas={data.quotas} freeTier={!data.pro} />
 
       <section className="grid gap-4 sm:grid-cols-3">
         <Card className="rounded-2xl border-border shadow-card">

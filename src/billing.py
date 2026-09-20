@@ -11,7 +11,8 @@ from slowapi.util import get_remote_address
 
 from src.models_db import Organization
 
-INACTIVE = {"incomplete", "past_due", "canceled", "cancelled", "unpaid"}
+# Incomplete/unpaid Clerk orgs use the free diagnostic tier instead of a 402.
+INACTIVE = {"past_due", "canceled", "cancelled"}
 BILLING_ERROR = "Tenant subscription inactive. Please update billing."
 
 
